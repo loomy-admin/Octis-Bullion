@@ -2,6 +2,7 @@
  * ReportService — Bullion Phase B3
  *
  * Dedicated authoritative reporting service for the Bullion platform.
+ * Clean pure Sequelize implementation.
  *
  * CORE INVARIANTS:
  * 1. REPORTS RECONCILE WITH UNDERLYING TRANSACTIONS:
@@ -21,8 +22,18 @@
  */
 
 import Decimal from "decimal.js";
-import { prisma } from "@/lib/db/client";
-import type { Prisma, MovementType } from "@prisma/client";
+import { Op } from "sequelize";
+import {
+  Purchase,
+  Sale,
+  StockMovement,
+  Metal,
+  Purity,
+  User,
+  StockAdjustment,
+  OpeningStock,
+} from "@/lib/db";
+import type { MovementType } from "@/lib/db/types";
 import { getAllStockPositions, getDetailedStockPositions } from "./stock-service";
 
 // ---------------------------------------------------------------------------
@@ -52,7 +63,7 @@ export interface DateRange {
  */
 export function parseDateRange(
   dateFrom?: string | null,
-  dateTo?: string | null,
+  dateTo?: string | null
 ): DateRange | undefined {
   if (!dateFrom && !dateTo) return undefined;
 
@@ -117,16 +128,16 @@ export interface PurchaseRegisterResult {
 }
 
 export async function getPurchaseRegisterReport(
-  filters: BaseReportFilters = {},
+  filters: BaseReportFilters = {}
 ): Promise<PurchaseRegisterResult> {
   const dateRange = parseDateRange(filters.dateFrom, filters.dateTo);
 
-  const where: Prisma.PurchaseWhereInput = {};
+  const where: any = {};
 
   if (dateRange) {
     where.date = {};
-    if (dateRange.gte) where.date.gte = dateRange.gte;
-    if (dateRange.lte) where.date.lte = dateRange.lte;
+    if (dateRange.gte) where.date[Op.gte] = dateRange.gte;
+    if (dateRange.lte) where.date[Op.lte] = dateRange.lte;
   }
 
   if (filters.metalId) where.metalId = filters.metalId;
@@ -134,25 +145,28 @@ export async function getPurchaseRegisterReport(
   if (filters.counterpartyId) where.counterpartyId = filters.counterpartyId;
 
   if (filters.status && filters.status !== "ALL") {
-    where.status = filters.status as "DRAFT" | "POSTED" | "CANCELLED";
+    where.status = filters.status;
   }
 
   if (filters.search && filters.search.trim()) {
-    const q = filters.search.trim();
-    where.OR = [
-      { invoiceNumber: { contains: q, mode: "insensitive" } },
-      { supplierName: { contains: q, mode: "insensitive" } },
-      { notes: { contains: q, mode: "insensitive" } },
+    const q = `%${filters.search.trim()}%`;
+    where[Op.or] = [
+      { invoiceNumber: { [Op.like]: q } },
+      { supplierName: { [Op.like]: q } },
+      { notes: { [Op.like]: q } },
     ];
   }
 
-  const purchases = await prisma.purchase.findMany({
+  const purchases = await Purchase.findAll({
     where,
-    include: {
-      metal: true,
-      purity: true,
-    },
-    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+    include: [
+      { model: Metal, as: "metal" },
+      { model: Purity, as: "purity" },
+    ],
+    order: [
+      ["date", "DESC"],
+      ["createdAt", "DESC"],
+    ],
   });
 
   let totalWeight = new Decimal(0);
@@ -176,6 +190,9 @@ export async function getPurchaseRegisterReport(
       draftCount++;
     }
 
+    const metal = (p as any).metal;
+    const purity = (p as any).purity;
+
     return {
       id: p.id,
       invoiceNumber: p.invoiceNumber,
@@ -184,10 +201,10 @@ export async function getPurchaseRegisterReport(
       supplierContact: p.supplierContact,
       counterpartyId: p.counterpartyId,
       metalId: p.metalId,
-      metalCode: p.metal.code,
-      metalName: p.metal.name,
+      metalCode: metal?.code ?? "",
+      metalName: metal?.name ?? "",
       purityId: p.purityId,
-      purityLabel: p.purity.label,
+      purityLabel: purity?.label ?? "",
       weightGrams: weight,
       ratePerGram: rate,
       totalAmount: amount,
@@ -259,16 +276,16 @@ export interface SalesRegisterResult {
 }
 
 export async function getSalesRegisterReport(
-  filters: BaseReportFilters = {},
+  filters: BaseReportFilters = {}
 ): Promise<SalesRegisterResult> {
   const dateRange = parseDateRange(filters.dateFrom, filters.dateTo);
 
-  const where: Prisma.SaleWhereInput = {};
+  const where: any = {};
 
   if (dateRange) {
     where.date = {};
-    if (dateRange.gte) where.date.gte = dateRange.gte;
-    if (dateRange.lte) where.date.lte = dateRange.lte;
+    if (dateRange.gte) where.date[Op.gte] = dateRange.gte;
+    if (dateRange.lte) where.date[Op.lte] = dateRange.lte;
   }
 
   if (filters.metalId) where.metalId = filters.metalId;
@@ -276,25 +293,28 @@ export async function getSalesRegisterReport(
   if (filters.counterpartyId) where.counterpartyId = filters.counterpartyId;
 
   if (filters.status && filters.status !== "ALL") {
-    where.status = filters.status as "DRAFT" | "POSTED" | "CANCELLED";
+    where.status = filters.status;
   }
 
   if (filters.search && filters.search.trim()) {
-    const q = filters.search.trim();
-    where.OR = [
-      { invoiceNumber: { contains: q, mode: "insensitive" } },
-      { buyerName: { contains: q, mode: "insensitive" } },
-      { notes: { contains: q, mode: "insensitive" } },
+    const q = `%${filters.search.trim()}%`;
+    where[Op.or] = [
+      { invoiceNumber: { [Op.like]: q } },
+      { buyerName: { [Op.like]: q } },
+      { notes: { [Op.like]: q } },
     ];
   }
 
-  const sales = await prisma.sale.findMany({
+  const sales = await Sale.findAll({
     where,
-    include: {
-      metal: true,
-      purity: true,
-    },
-    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+    include: [
+      { model: Metal, as: "metal" },
+      { model: Purity, as: "purity" },
+    ],
+    order: [
+      ["date", "DESC"],
+      ["createdAt", "DESC"],
+    ],
   });
 
   let totalWeight = new Decimal(0);
@@ -318,6 +338,9 @@ export async function getSalesRegisterReport(
       draftCount++;
     }
 
+    const metal = (s as any).metal;
+    const purity = (s as any).purity;
+
     return {
       id: s.id,
       invoiceNumber: s.invoiceNumber,
@@ -326,10 +349,10 @@ export async function getSalesRegisterReport(
       buyerContact: s.buyerContact,
       counterpartyId: s.counterpartyId,
       metalId: s.metalId,
-      metalCode: s.metal.code,
-      metalName: s.metal.name,
+      metalCode: metal?.code ?? "",
+      metalName: metal?.name ?? "",
       purityId: s.purityId,
-      purityLabel: s.purity.label,
+      purityLabel: purity?.label ?? "",
       weightGrams: weight,
       ratePerGram: rate,
       totalAmount: amount,
@@ -398,7 +421,7 @@ export interface CurrentStockReportResult {
 }
 
 export async function getCurrentStockReport(
-  filters: { metalId?: string | null; purityId?: string | null; search?: string | null } = {},
+  filters: { metalId?: string | null; purityId?: string | null; search?: string | null } = {}
 ): Promise<CurrentStockReportResult> {
   const detailed = await getDetailedStockPositions();
 
@@ -496,18 +519,18 @@ export interface SupplierWisePurchaseResult {
 }
 
 export async function getSupplierWisePurchaseReport(
-  filters: BaseReportFilters = {},
+  filters: BaseReportFilters = {}
 ): Promise<SupplierWisePurchaseResult> {
   const dateRange = parseDateRange(filters.dateFrom, filters.dateTo);
 
-  const where: Prisma.PurchaseWhereInput = {
+  const where: any = {
     status: "POSTED", // Cancelled & drafts strictly excluded
   };
 
   if (dateRange) {
     where.date = {};
-    if (dateRange.gte) where.date.gte = dateRange.gte;
-    if (dateRange.lte) where.date.lte = dateRange.lte;
+    if (dateRange.gte) where.date[Op.gte] = dateRange.gte;
+    if (dateRange.lte) where.date[Op.lte] = dateRange.lte;
   }
 
   if (filters.metalId) where.metalId = filters.metalId;
@@ -515,23 +538,23 @@ export async function getSupplierWisePurchaseReport(
   if (filters.counterpartyId) where.counterpartyId = filters.counterpartyId;
 
   if (filters.search && filters.search.trim()) {
-    const q = filters.search.trim();
-    where.OR = [
-      { supplierName: { contains: q, mode: "insensitive" } },
-      { supplierContact: { contains: q, mode: "insensitive" } },
-      { invoiceNumber: { contains: q, mode: "insensitive" } },
+    const q = `%${filters.search.trim()}%`;
+    where[Op.or] = [
+      { supplierName: { [Op.like]: q } },
+      { supplierContact: { [Op.like]: q } },
+      { invoiceNumber: { [Op.like]: q } },
     ];
   }
 
-  const purchases = await prisma.purchase.findMany({
+  const purchases = await Purchase.findAll({
     where,
-    select: {
-      supplierName: true,
-      supplierContact: true,
-      counterpartyId: true,
-      weightGrams: true,
-      totalAmount: true,
-    },
+    attributes: [
+      "supplierName",
+      "supplierContact",
+      "counterpartyId",
+      "weightGrams",
+      "totalAmount",
+    ],
   });
 
   const supplierMap = new Map<
@@ -637,18 +660,18 @@ export interface BuyerWiseSalesResult {
 }
 
 export async function getBuyerWiseSalesReport(
-  filters: BaseReportFilters = {},
+  filters: BaseReportFilters = {}
 ): Promise<BuyerWiseSalesResult> {
   const dateRange = parseDateRange(filters.dateFrom, filters.dateTo);
 
-  const where: Prisma.SaleWhereInput = {
+  const where: any = {
     status: "POSTED", // Cancelled & drafts strictly excluded
   };
 
   if (dateRange) {
     where.date = {};
-    if (dateRange.gte) where.date.gte = dateRange.gte;
-    if (dateRange.lte) where.date.lte = dateRange.lte;
+    if (dateRange.gte) where.date[Op.gte] = dateRange.gte;
+    if (dateRange.lte) where.date[Op.lte] = dateRange.lte;
   }
 
   if (filters.metalId) where.metalId = filters.metalId;
@@ -656,23 +679,23 @@ export async function getBuyerWiseSalesReport(
   if (filters.counterpartyId) where.counterpartyId = filters.counterpartyId;
 
   if (filters.search && filters.search.trim()) {
-    const q = filters.search.trim();
-    where.OR = [
-      { buyerName: { contains: q, mode: "insensitive" } },
-      { buyerContact: { contains: q, mode: "insensitive" } },
-      { invoiceNumber: { contains: q, mode: "insensitive" } },
+    const q = `%${filters.search.trim()}%`;
+    where[Op.or] = [
+      { buyerName: { [Op.like]: q } },
+      { buyerContact: { [Op.like]: q } },
+      { invoiceNumber: { [Op.like]: q } },
     ];
   }
 
-  const sales = await prisma.sale.findMany({
+  const sales = await Sale.findAll({
     where,
-    select: {
-      buyerName: true,
-      buyerContact: true,
-      counterpartyId: true,
-      weightGrams: true,
-      totalAmount: true,
-    },
+    attributes: [
+      "buyerName",
+      "buyerContact",
+      "counterpartyId",
+      "weightGrams",
+      "totalAmount",
+    ],
   });
 
   const buyerMap = new Map<
@@ -766,8 +789,8 @@ export interface BucketComparativeFlow {
   salesWeightGrams: Decimal;
   salesAmount: Decimal;
   salesAverageRate: Decimal;
-  differenceWeightGrams: Decimal; // purchaseWeight - salesWeight
-  differenceAmount: Decimal;      // purchaseAmount - salesAmount
+  differenceWeightGrams: Decimal;
+  differenceAmount: Decimal;
 }
 
 export interface PurchaseVsSalesSummary {
@@ -781,8 +804,8 @@ export interface PurchaseVsSalesSummary {
   salesAverageRate: Decimal;
   salesCount: number;
 
-  differenceWeightGrams: Decimal; // purchase - sales
-  differenceAmount: Decimal;      // purchase - sales
+  differenceWeightGrams: Decimal;
+  differenceAmount: Decimal;
 }
 
 export interface PurchaseVsSalesResult {
@@ -792,23 +815,23 @@ export interface PurchaseVsSalesResult {
 }
 
 export async function getPurchaseVsSalesReport(
-  filters: { dateFrom?: string | null; dateTo?: string | null; metalId?: string | null; purityId?: string | null } = {},
+  filters: { dateFrom?: string | null; dateTo?: string | null; metalId?: string | null; purityId?: string | null } = {}
 ): Promise<PurchaseVsSalesResult> {
   const dateRange = parseDateRange(filters.dateFrom, filters.dateTo);
 
-  const purchaseWhere: Prisma.PurchaseWhereInput = { status: "POSTED" };
-  const saleWhere: Prisma.SaleWhereInput = { status: "POSTED" };
+  const purchaseWhere: any = { status: "POSTED" };
+  const saleWhere: any = { status: "POSTED" };
 
   if (dateRange) {
     purchaseWhere.date = {};
     saleWhere.date = {};
     if (dateRange.gte) {
-      purchaseWhere.date.gte = dateRange.gte;
-      saleWhere.date.gte = dateRange.gte;
+      purchaseWhere.date[Op.gte] = dateRange.gte;
+      saleWhere.date[Op.gte] = dateRange.gte;
     }
     if (dateRange.lte) {
-      purchaseWhere.date.lte = dateRange.lte;
-      saleWhere.date.lte = dateRange.lte;
+      purchaseWhere.date[Op.lte] = dateRange.lte;
+      saleWhere.date[Op.lte] = dateRange.lte;
     }
   }
 
@@ -822,26 +845,16 @@ export async function getPurchaseVsSalesReport(
   }
 
   const [purchases, sales, metals, purities] = await Promise.all([
-    prisma.purchase.findMany({
+    Purchase.findAll({
       where: purchaseWhere,
-      select: {
-        metalId: true,
-        purityId: true,
-        weightGrams: true,
-        totalAmount: true,
-      },
+      attributes: ["metalId", "purityId", "weightGrams", "totalAmount"],
     }),
-    prisma.sale.findMany({
+    Sale.findAll({
       where: saleWhere,
-      select: {
-        metalId: true,
-        purityId: true,
-        weightGrams: true,
-        totalAmount: true,
-      },
+      attributes: ["metalId", "purityId", "weightGrams", "totalAmount"],
     }),
-    prisma.metal.findMany({ where: { isActive: true } }),
-    prisma.purity.findMany({ where: { isActive: true } }),
+    Metal.findAll({ where: { isActive: true } }),
+    Purity.findAll({ where: { isActive: true } }),
   ]);
 
   let totalPurchaseWeight = new Decimal(0);
@@ -849,7 +862,6 @@ export async function getPurchaseVsSalesReport(
   let totalSalesWeight = new Decimal(0);
   let totalSalesAmount = new Decimal(0);
 
-  // Per-bucket grouping
   const bucketMap = new Map<
     string,
     {
@@ -862,7 +874,6 @@ export async function getPurchaseVsSalesReport(
     }
   >();
 
-  // Initialize active buckets matching filter
   for (const m of metals) {
     if (filters.metalId && m.id !== filters.metalId) continue;
     const bucketPurities = purities.filter((p) => p.metalId === m.id);
@@ -880,7 +891,6 @@ export async function getPurchaseVsSalesReport(
     }
   }
 
-  // Accumulate Purchases
   for (const p of purchases) {
     const w = new Decimal(p.weightGrams.toString());
     const a = new Decimal(p.totalAmount.toString());
@@ -904,7 +914,6 @@ export async function getPurchaseVsSalesReport(
     bucket.purchaseAmount = bucket.purchaseAmount.plus(a);
   }
 
-  // Accumulate Sales
   for (const s of sales) {
     const w = new Decimal(s.weightGrams.toString());
     const a = new Decimal(s.totalAmount.toString());
@@ -1001,10 +1010,10 @@ export interface BucketProfitRow {
   purityLabel: string;
   soldWeightGrams: Decimal;
   salesValue: Decimal;
-  unitCostBasis: Decimal; // Weighted avg purchase rate for this bucket
-  totalCostBasis: Decimal; // soldWeight * unitCostBasis
-  grossProfit: Decimal;    // salesValue - totalCostBasis
-  profitMarginPercent: Decimal; // (grossProfit / salesValue) * 100
+  unitCostBasis: Decimal;
+  totalCostBasis: Decimal;
+  grossProfit: Decimal;
+  profitMarginPercent: Decimal;
 }
 
 export interface BullionProfitSummary {
@@ -1023,53 +1032,40 @@ export interface BullionProfitResult {
 }
 
 export async function getBullionProfitReport(
-  filters: { dateFrom?: string | null; dateTo?: string | null; metalId?: string | null; purityId?: string | null } = {},
+  filters: { dateFrom?: string | null; dateTo?: string | null; metalId?: string | null; purityId?: string | null } = {}
 ): Promise<BullionProfitResult> {
   const dateRange = parseDateRange(filters.dateFrom, filters.dateTo);
 
-  // Cost Basis is derived from all authoritative POSTED purchases for the bucket
-  // (or up to the period). In V1 Weighted Average Cost, the bucket's overall acquisition cost
-  // per gram is established by posted purchases.
+  const purchaseWhere: any = {
+    status: "POSTED",
+  };
+  if (filters.metalId) purchaseWhere.metalId = filters.metalId;
+  if (filters.purityId) purchaseWhere.purityId = filters.purityId;
+
+  const saleWhere: any = {
+    status: "POSTED",
+  };
+  if (dateRange) {
+    saleWhere.date = {};
+    if (dateRange.gte) saleWhere.date[Op.gte] = dateRange.gte;
+    if (dateRange.lte) saleWhere.date[Op.lte] = dateRange.lte;
+  }
+  if (filters.metalId) saleWhere.metalId = filters.metalId;
+  if (filters.purityId) saleWhere.purityId = filters.purityId;
+
   const [allPurchases, periodSales, metals, purities] = await Promise.all([
-    prisma.purchase.findMany({
-      where: {
-        status: "POSTED",
-        ...(filters.metalId ? { metalId: filters.metalId } : {}),
-        ...(filters.purityId ? { purityId: filters.purityId } : {}),
-      },
-      select: {
-        metalId: true,
-        purityId: true,
-        weightGrams: true,
-        totalAmount: true,
-      },
+    Purchase.findAll({
+      where: purchaseWhere,
+      attributes: ["metalId", "purityId", "weightGrams", "totalAmount"],
     }),
-    prisma.sale.findMany({
-      where: {
-        status: "POSTED",
-        ...(dateRange
-          ? {
-              date: {
-                ...(dateRange.gte ? { gte: dateRange.gte } : {}),
-                ...(dateRange.lte ? { lte: dateRange.lte } : {}),
-              },
-            }
-          : {}),
-        ...(filters.metalId ? { metalId: filters.metalId } : {}),
-        ...(filters.purityId ? { purityId: filters.purityId } : {}),
-      },
-      select: {
-        metalId: true,
-        purityId: true,
-        weightGrams: true,
-        totalAmount: true,
-      },
+    Sale.findAll({
+      where: saleWhere,
+      attributes: ["metalId", "purityId", "weightGrams", "totalAmount"],
     }),
-    prisma.metal.findMany({ where: { isActive: true } }),
-    prisma.purity.findMany({ where: { isActive: true } }),
+    Metal.findAll({ where: { isActive: true } }),
+    Purity.findAll({ where: { isActive: true } }),
   ]);
 
-  // 1. Calculate weighted average purchase cost per gram for each bucket
   const bucketCostMap = new Map<
     string,
     { totalCost: Decimal; totalWeight: Decimal }
@@ -1086,7 +1082,6 @@ export async function getBullionProfitReport(
     bucketCostMap.set(key, existing);
   }
 
-  // 2. Aggregate period sales per bucket
   const bucketSalesMap = new Map<
     string,
     { metalId: string; purityId: string; soldWeight: Decimal; salesAmount: Decimal }
@@ -1215,16 +1210,16 @@ export async function getTransactionHistoryReport(
     search?: string | null;
     limit?: number;
     skip?: number;
-  } = {},
+  } = {}
 ): Promise<TransactionHistoryResult> {
   const dateRange = parseDateRange(filters.dateFrom, filters.dateTo);
 
-  const where: Prisma.StockMovementWhereInput = {};
+  const where: any = {};
 
   if (dateRange) {
     where.createdAt = {};
-    if (dateRange.gte) where.createdAt.gte = dateRange.gte;
-    if (dateRange.lte) where.createdAt.lte = dateRange.lte;
+    if (dateRange.gte) where.createdAt[Op.gte] = dateRange.gte;
+    if (dateRange.lte) where.createdAt[Op.lte] = dateRange.lte;
   }
 
   if (filters.metalId) where.metalId = filters.metalId;
@@ -1232,37 +1227,33 @@ export async function getTransactionHistoryReport(
   if (filters.movementType) where.movementType = filters.movementType;
 
   if (filters.search && filters.search.trim()) {
-    const q = filters.search.trim();
-    where.OR = [
-      { reference: { contains: q, mode: "insensitive" } },
-      { purchase: { invoiceNumber: { contains: q, mode: "insensitive" } } },
-      { sale: { invoiceNumber: { contains: q, mode: "insensitive" } } },
-      { adjustment: { reason: { contains: q, mode: "insensitive" } } },
-      { createdBy: { name: { contains: q, mode: "insensitive" } } },
+    const q = `%${filters.search.trim()}%`;
+    where[Op.or] = [
+      { reference: { [Op.like]: q } },
     ];
   }
 
-  const movements = await prisma.stockMovement.findMany({
+  const movements = await StockMovement.findAll({
     where,
-    include: {
-      metal: true,
-      purity: true,
-      createdBy: { select: { id: true, name: true, role: true } },
-      purchase: { select: { id: true, invoiceNumber: true, status: true, supplierName: true } },
-      sale: { select: { id: true, invoiceNumber: true, status: true, buyerName: true } },
-      adjustment: { select: { id: true, reason: true, status: true, direction: true } },
-      openingStock: { select: { id: true, effectiveDate: true } },
-    },
-    orderBy: { createdAt: "desc" },
-    take: filters.limit ?? 250,
-    skip: filters.skip ?? 0,
+    include: [
+      { model: Metal, as: "metal" },
+      { model: Purity, as: "purity" },
+      { model: User, as: "createdBy", attributes: ["id", "name", "role"] },
+      { model: Purchase, as: "purchase", attributes: ["id", "invoiceNumber", "status", "supplierName"] },
+      { model: Sale, as: "sale", attributes: ["id", "invoiceNumber", "status", "buyerName"] },
+      { model: StockAdjustment, as: "adjustment", attributes: ["id", "reason", "status", "direction"] },
+      { model: OpeningStock, as: "openingStock", attributes: ["id", "effectiveDate"] },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit: filters.limit ?? 250,
+    offset: filters.skip ?? 0,
   });
 
   let netWeight = new Decimal(0);
   let totalInflow = new Decimal(0);
   let totalOutflow = new Decimal(0);
 
-  const rows: TransactionHistoryRow[] = movements.map((m) => {
+  const rows: TransactionHistoryRow[] = movements.map((m: any) => {
     const signedWeight = new Decimal(m.weightGrams.toString());
     const absWeight = signedWeight.abs();
 
@@ -1291,7 +1282,10 @@ export async function getTransactionHistoryReport(
       status = m.adjustment.status;
     } else if (m.openingStock) {
       relatedType = "OPENING";
-      relatedInvoiceOrReason = `Opening Stock (Effective: ${m.openingStock.effectiveDate.toISOString().split("T")[0]})`;
+      const effDate = m.openingStock.effectiveDate instanceof Date
+        ? m.openingStock.effectiveDate.toISOString().split("T")[0]
+        : String(m.openingStock.effectiveDate);
+      relatedInvoiceOrReason = `Opening Stock (Effective: ${effDate})`;
       status = "POSTED";
     }
 
@@ -1300,16 +1294,16 @@ export async function getTransactionHistoryReport(
       createdAt: m.createdAt,
       movementType: m.movementType,
       metalId: m.metalId,
-      metalCode: m.metal.code,
-      metalName: m.metal.name,
+      metalCode: m.metal?.code ?? "",
+      metalName: m.metal?.name ?? "",
       purityId: m.purityId,
-      purityLabel: m.purity.label,
+      purityLabel: m.purity?.label ?? "",
       signedWeightGrams: signedWeight,
       absoluteWeightGrams: absWeight,
       reference: m.reference,
-      operatorId: m.createdBy.id,
-      operatorName: m.createdBy.name,
-      operatorRole: m.createdBy.role,
+      operatorId: m.createdBy?.id ?? "",
+      operatorName: m.createdBy?.name ?? "",
+      operatorRole: m.createdBy?.role ?? "",
       relatedTransactionType: relatedType,
       relatedInvoiceOrReason,
       status,

@@ -20,7 +20,7 @@ import {
   getAvailableStockAction,
 } from "@/lib/actions/stock-actions";
 import { formatGrams, formatDate } from "@/lib/utils/helpers";
-import type { AdjustmentDirection, TransactionStatus } from "@prisma/client";
+import type { AdjustmentDirection, TransactionStatus } from "@/lib/db/types";
 
 interface AdjustmentRow {
   id: string;

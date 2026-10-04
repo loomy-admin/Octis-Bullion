@@ -13,14 +13,21 @@
  */
 
 import Decimal from "decimal.js";
-import { prisma } from "@/lib/db/client";
+import {
+  StockAdjustment,
+  StockMovement,
+  Metal,
+  Purity,
+  User,
+  runTransaction,
+} from "@/lib/db";
 import { writeAudit } from "./audit-service";
 import { assertMetalActive, assertPurityActive } from "./master-service";
 import {
   assertSufficientStock,
   UnauthorizedError,
 } from "./stock-service";
-import type { Role, AdjustmentDirection } from "@prisma/client";
+import type { Role, AdjustmentDirection } from "@/lib/db/types";
 
 // ---------------------------------------------------------------------------
 // Input Types
@@ -44,7 +51,7 @@ export interface CreateAdjustmentInput {
 export async function createAdjustment(
   actorId: string,
   actorRole: Role,
-  input: CreateAdjustmentInput,
+  input: CreateAdjustmentInput
 ) {
   // ADMIN-only
   if (actorRole !== "ADMIN") {
@@ -55,30 +62,31 @@ export async function createAdjustment(
   if (weight.lessThanOrEqualTo(0)) throw new Error("Weight must be positive.");
   if (!input.reason?.trim()) throw new Error("Reason is required.");
 
-  return prisma.$transaction(async (tx) => {
+  return runTransaction(async (t) => {
     // Validate master data
-    await assertMetalActive(tx, input.metalId);
-    await assertPurityActive(tx, input.purityId, input.metalId);
+    await assertMetalActive(t, input.metalId);
+    await assertPurityActive(t, input.purityId, input.metalId);
 
     // For DECREASE: validate we have enough stock
     if (input.direction === "DECREASE") {
-      await assertSufficientStock(tx, input.metalId, input.purityId, weight);
+      await assertSufficientStock(t, input.metalId, input.purityId, weight);
     }
 
     // 1. Create adjustment record
-    const adjustment = await tx.stockAdjustment.create({
-      data: {
+    const adjustment = await StockAdjustment.create(
+      {
         date: input.date,
         metalId: input.metalId,
         purityId: input.purityId,
         direction: input.direction,
-        weightGrams: weight,
+        weightGrams: weight.toString(),
         reason: input.reason.trim(),
-        notes: input.notes,
+        notes: input.notes || null,
         status: "POSTED",
         createdById: actorId,
       },
-    });
+      { transaction: t }
+    );
 
     // 2. Create append-only StockMovement
     const movementType =
@@ -86,20 +94,21 @@ export async function createAdjustment(
     const signedWeight =
       input.direction === "INCREASE" ? weight : weight.negated();
 
-    await tx.stockMovement.create({
-      data: {
+    await StockMovement.create(
+      {
         metalId: input.metalId,
         purityId: input.purityId,
         movementType,
-        weightGrams: signedWeight,
+        weightGrams: signedWeight.toString(),
         adjustmentId: adjustment.id,
         createdById: actorId,
         reference: `Adjustment ${input.direction}: ${input.reason}`,
       },
-    });
+      { transaction: t }
+    );
 
     // 3. Audit
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "CREATE",
       entityType: "StockAdjustment",
       entityId: adjustment.id,
@@ -116,7 +125,7 @@ export async function createAdjustment(
       description: `Stock adjustment (${input.direction}) posted: ${signedWeight.toFixed(4)}g. Reason: ${input.reason}`,
     });
 
-    return adjustment;
+    return adjustment.get({ plain: true });
   });
 }
 
@@ -128,60 +137,64 @@ export async function cancelAdjustment(
   actorId: string,
   actorRole: Role,
   adjustmentId: string,
-  reason: string,
+  reason: string
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("cancel stock adjustment");
   }
   if (!reason?.trim()) throw new Error("Cancellation reason is required.");
 
-  return prisma.$transaction(async (tx) => {
-    const adj = await tx.stockAdjustment.findUniqueOrThrow({
-      where: { id: adjustmentId },
+  return runTransaction(async (t) => {
+    const adj = await StockAdjustment.findByPk(adjustmentId, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
     });
+
+    if (!adj) {
+      throw new Error(`Stock adjustment ${adjustmentId} not found.`);
+    }
 
     if (adj.status !== "POSTED") {
       throw new Error(
-        `Only POSTED adjustments can be cancelled. Current status: ${adj.status}`,
+        `Only POSTED adjustments can be cancelled. Current status: ${adj.status}`
       );
     }
+
+    const adjWeight = new Decimal(adj.weightGrams);
 
     // For a DECREASE reversal: stock goes back up — no negative check needed
     // For an INCREASE reversal: stock goes down — check we have enough
     if (adj.direction === "INCREASE") {
-      await assertSufficientStock(tx, adj.metalId, adj.purityId, adj.weightGrams);
+      await assertSufficientStock(t, adj.metalId, adj.purityId, adjWeight);
     }
 
     // 1. Mark CANCELLED
-    await tx.stockAdjustment.update({
-      where: { id: adjustmentId },
-      data: {
-        status: "CANCELLED",
-        cancelReason: reason.trim(),
-        cancelledAt: new Date(),
-      },
-    });
+    adj.status = "CANCELLED";
+    adj.cancelReason = reason.trim();
+    adj.cancelledAt = new Date();
+    await adj.save({ transaction: t });
 
     // 2. Reversing movement
     const reversalMovementType =
       adj.direction === "INCREASE" ? "ADJUSTMENT_DECREASE" : "ADJUSTMENT_INCREASE";
     const reversalWeight =
-      adj.direction === "INCREASE" ? adj.weightGrams.negated() : adj.weightGrams;
+      adj.direction === "INCREASE" ? adjWeight.negated() : adjWeight;
 
-    await tx.stockMovement.create({
-      data: {
+    await StockMovement.create(
+      {
         metalId: adj.metalId,
         purityId: adj.purityId,
         movementType: reversalMovementType,
-        weightGrams: reversalWeight,
+        weightGrams: reversalWeight.toString(),
         adjustmentId: adj.id,
         createdById: actorId,
         reference: `Reversal of adjustment ${adj.id}: ${reason}`,
       },
-    });
+      { transaction: t }
+    );
 
     // 3. Audit
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "CANCEL",
       entityType: "StockAdjustment",
       entityId: adjustmentId,
@@ -194,7 +207,7 @@ export async function cancelAdjustment(
       description: `Adjustment cancelled and reversed: ${reason}`,
     });
 
-    return tx.stockAdjustment.findUniqueOrThrow({ where: { id: adjustmentId } });
+    return adj.get({ plain: true });
   });
 }
 
@@ -203,26 +216,34 @@ export async function cancelAdjustment(
 // ---------------------------------------------------------------------------
 
 export async function getAdjustment(id: string) {
-  return prisma.stockAdjustment.findUniqueOrThrow({
-    where: { id },
-    include: { metal: true, purity: true, createdBy: true },
+  const adj = await StockAdjustment.findByPk(id, {
+    include: [
+      { model: Metal, as: "metal" },
+      { model: Purity, as: "purity" },
+      { model: User, as: "createdBy" },
+    ],
   });
+  if (!adj) throw new Error(`Stock adjustment ${id} not found.`);
+  return adj.get({ plain: true });
 }
 
 export async function listAdjustments(opts?: {
   metalId?: string;
   purityId?: string;
 }) {
-  return prisma.stockAdjustment.findMany({
-    where: {
-      ...(opts?.metalId ? { metalId: opts.metalId } : {}),
-      ...(opts?.purityId ? { purityId: opts.purityId } : {}),
-    },
-    include: {
-      metal: true,
-      purity: true,
-      createdBy: { select: { id: true, name: true, email: true } },
-    },
-    orderBy: { date: "desc" },
+  const where: any = {};
+  if (opts?.metalId) where.metalId = opts.metalId;
+  if (opts?.purityId) where.purityId = opts.purityId;
+
+  const adjs = await StockAdjustment.findAll({
+    where,
+    include: [
+      { model: Metal, as: "metal" },
+      { model: Purity, as: "purity" },
+      { model: User, as: "createdBy", attributes: ["id", "name", "email"] },
+    ],
+    order: [["date", "DESC"]],
   });
+
+  return adjs.map((a) => a.get({ plain: true }));
 }

@@ -4,7 +4,7 @@ import { ReportFilters } from "@/components/reports/report-filters";
 import { SupplierWiseView } from "./supplier-wise-view";
 import { requireUser } from "@/lib/auth/session";
 import { getSupplierWisePurchaseReport } from "@/lib/services/report-service";
-import { prisma } from "@/lib/db/client";
+import { Metal, Purity } from "@/lib/db";
 import { serializeForClient } from "@/lib/utils/serialize";
 
 export const metadata = { title: "Supplier-wise Purchases — Bullion Reports" };
@@ -24,8 +24,8 @@ export default async function SupplierWiseReportPage(props: PageProps) {
   const searchParams = await props.searchParams;
 
   const [metals, purities, report] = await Promise.all([
-    prisma.metal.findMany({ where: { isActive: true }, select: { id: true, name: true, code: true } }),
-    prisma.purity.findMany({ where: { isActive: true }, select: { id: true, label: true, metalId: true } }),
+    Metal.findAll({ where: { isActive: true }, attributes: ["id", "name", "code"], raw: true }),
+    Purity.findAll({ where: { isActive: true }, attributes: ["id", "label", "metalId"], raw: true }),
     getSupplierWisePurchaseReport({
       dateFrom: searchParams.dateFrom,
       dateTo: searchParams.dateTo,

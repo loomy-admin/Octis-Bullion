@@ -23,7 +23,7 @@ import {
 } from "@/lib/actions/sale-actions";
 import { getAvailableStockAction } from "@/lib/actions/stock-actions";
 import { formatCurrency, formatGrams, formatDate } from "@/lib/utils/helpers";
-import type { PaymentMode, TransactionStatus } from "@prisma/client";
+import type { PaymentMode, TransactionStatus } from "@/lib/db/types";
 
 interface SaleRow {
   id: string;

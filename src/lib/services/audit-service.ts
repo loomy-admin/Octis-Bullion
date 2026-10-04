@@ -2,14 +2,15 @@
  * AuditService — B1
  *
  * Writes to the immutable AuditLog table.
- * NEVER call this outside a service method — always pass the tx client.
+ * Clean pure Sequelize implementation.
  */
 
-import type { Prisma } from "@prisma/client";
-import type { AuditAction } from "@prisma/client";
+import type { Transaction } from "sequelize";
+import { AuditLog } from "@/lib/db/models/AuditLog";
+import type { AuditAction } from "@/lib/db/types";
 
 export async function writeAudit(
-  tx: Prisma.TransactionClient,
+  t: Transaction | undefined,
   opts: {
     action: AuditAction;
     entityType: string;
@@ -23,22 +24,23 @@ export async function writeAudit(
     purchaseId?: string;
     saleId?: string;
     adjustmentId?: string;
-  },
+  }
 ) {
-  await tx.auditLog.create({
-    data: {
+  await AuditLog.create(
+    {
       action: opts.action,
       entityType: opts.entityType,
       entityId: opts.entityId,
       actorId: opts.actorId,
-      prevState: opts.prevState ? (opts.prevState as Prisma.InputJsonValue) : undefined,
-      nextState: opts.nextState ? (opts.nextState as Prisma.InputJsonValue) : undefined,
-      description: opts.description,
-      metalId: opts.metalId,
-      purityId: opts.purityId,
-      purchaseId: opts.purchaseId,
-      saleId: opts.saleId,
-      adjustmentId: opts.adjustmentId,
+      prevState: opts.prevState ?? null,
+      nextState: opts.nextState ?? null,
+      description: opts.description ?? null,
+      metalId: opts.metalId ?? null,
+      purityId: opts.purityId ?? null,
+      purchaseId: opts.purchaseId ?? null,
+      saleId: opts.saleId ?? null,
+      adjustmentId: opts.adjustmentId ?? null,
     },
-  });
+    { transaction: t }
+  );
 }

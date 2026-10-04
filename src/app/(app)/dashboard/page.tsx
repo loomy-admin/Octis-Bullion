@@ -3,7 +3,7 @@ import { PageHeader } from "@/components/page-header";
 import { Package, TrendingUp, TrendingDown, ShoppingCart, Sliders, History, ArrowRight } from "lucide-react";
 import { getAllStockPositions } from "@/lib/services/stock-service";
 import { listStockMovements } from "@/lib/services/stock-service";
-import { prisma } from "@/lib/db/client";
+import { Purchase, Sale, Op } from "@/lib/db";
 import { formatCurrency, formatGrams, formatDate } from "@/lib/utils/helpers";
 import { requireUser } from "@/lib/auth/session";
 
@@ -16,22 +16,20 @@ export default async function DashboardPage() {
   startOfMonth.setDate(1);
   startOfMonth.setHours(0, 0, 0, 0);
 
-  const [positions, recentMovements, purchaseAgg, saleAgg] = await Promise.all([
+  const [positions, recentMovements, purchaseSum, saleSum] = await Promise.all([
     getAllStockPositions(),
     listStockMovements({ limit: 6 }),
-    prisma.purchase.aggregate({
+    Purchase.sum("totalAmount", {
       where: {
         status: "POSTED",
-        date: { gte: startOfMonth },
+        date: { [Op.gte]: startOfMonth },
       },
-      _sum: { totalAmount: true },
     }),
-    prisma.sale.aggregate({
+    Sale.sum("totalAmount", {
       where: {
         status: "POSTED",
-        date: { gte: startOfMonth },
+        date: { [Op.gte]: startOfMonth },
       },
-      _sum: { totalAmount: true },
     }),
   ]);
 
@@ -44,13 +42,8 @@ export default async function DashboardPage() {
     if (pos.metalCode === "SILVER") totalSilverGrams += w;
   }
 
-  const thisMonthPurchases = purchaseAgg._sum.totalAmount != null
-    ? purchaseAgg._sum.totalAmount.toString()
-    : "0.00";
-
-  const thisMonthSales = saleAgg._sum.totalAmount != null
-    ? saleAgg._sum.totalAmount.toString()
-    : "0.00";
+  const thisMonthPurchases = purchaseSum != null ? String(purchaseSum) : "0.00";
+  const thisMonthSales = saleSum != null ? String(saleSum) : "0.00";
 
   return (
     <div className="space-y-8">
@@ -196,19 +189,19 @@ export default async function DashboardPage() {
                   </td>
                 </tr>
               ) : (
-                recentMovements.map((m) => {
+                recentMovements.map((m: any) => {
                   const w = parseFloat(m.weightGrams.toString());
                   const isPositive = w > 0;
                   return (
                     <tr key={m.id} className="hover:bg-[var(--bg-table-hover)]">
                       <td className="py-2.5 px-4 text-[var(--text-secondary)]">
-                        {formatDate(m.createdAt)}
+                        {m.createdAt ? formatDate(m.createdAt) : "—"}
                       </td>
                       <td className="py-2.5 px-4 font-semibold text-[var(--text-primary)]">
                         {m.movementType}
                       </td>
                       <td className="py-2.5 px-4">
-                        {m.metal.name} ({m.purity.label})
+                        {m.metal?.name || ""} ({m.purity?.label || ""})
                       </td>
                       <td
                         className={`py-2.5 px-4 text-right font-mono font-bold ${
@@ -223,7 +216,7 @@ export default async function DashboardPage() {
                         {m.reference || "—"}
                       </td>
                       <td className="py-2.5 px-4 text-[var(--text-secondary)]">
-                        {m.createdBy.name}
+                        {m.createdBy?.name || "System"}
                       </td>
                     </tr>
                   );

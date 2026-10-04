@@ -28,17 +28,17 @@ export default async function AdjustmentsPage() {
     status: adj.status,
     cancelReason: adj.cancelReason,
     cancelledAt: adj.cancelledAt?.toISOString() || null,
-    createdAt: adj.createdAt.toISOString(),
-    metal: { id: adj.metal.id, name: adj.metal.name, code: adj.metal.code },
-    purity: { id: adj.purity.id, label: adj.purity.label, fineness: adj.purity.fineness.toString() },
-    createdBy: { id: adj.createdBy.id, name: adj.createdBy.name, email: adj.createdBy.email },
+    createdAt: adj.createdAt ? new Date(adj.createdAt).toISOString() : new Date().toISOString(),
+    metal: adj.metal ? { id: adj.metal.id, name: adj.metal.name, code: adj.metal.code } : { id: adj.metalId, name: "", code: "" },
+    purity: adj.purity ? { id: adj.purity.id, label: adj.purity.label, fineness: adj.purity.fineness.toString() } : { id: adj.purityId, label: "", fineness: "0" },
+    createdBy: adj.createdBy ? { id: adj.createdBy.id, name: adj.createdBy.name, email: adj.createdBy.email } : { id: adj.createdById, name: "System", email: "" },
   }));
 
   const serializedMetals = metals.map((m) => ({
     id: m.id,
     name: m.name,
     code: m.code,
-    purities: m.purities.map((p) => ({
+    purities: (m.purities || []).map((p: any) => ({
       id: p.id,
       label: p.label,
       fineness: p.fineness.toString(),

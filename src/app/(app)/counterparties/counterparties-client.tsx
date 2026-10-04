@@ -19,7 +19,7 @@ import {
   updateCounterpartyAction,
   toggleCounterpartyActiveAction,
 } from "@/lib/actions/counterparty-actions";
-import type { CounterpartyType } from "@prisma/client";
+import type { CounterpartyType } from "@/lib/db/types";
 
 interface CounterpartyItem {
   id: string;

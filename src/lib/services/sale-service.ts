@@ -16,14 +16,22 @@
  */
 
 import Decimal from "decimal.js";
-import { prisma } from "@/lib/db/client";
+import {
+  Sale,
+  StockMovement,
+  Metal,
+  Purity,
+  Counterparty,
+  User,
+  runTransaction,
+} from "@/lib/db";
 import { writeAudit } from "./audit-service";
 import { assertMetalActive, assertPurityActive } from "./master-service";
 import {
   assertSufficientStock,
   UnauthorizedError,
 } from "./stock-service";
-import type { Role, PaymentMode } from "@prisma/client";
+import type { Role, PaymentMode, TransactionStatus } from "@/lib/db/types";
 
 // ---------------------------------------------------------------------------
 // Input Types
@@ -52,7 +60,7 @@ export interface CreateSaleInput {
 export async function createSale(
   actorId: string,
   _actorRole: Role,
-  input: CreateSaleInput,
+  input: CreateSaleInput
 ) {
   const weight = new Decimal(input.weightGrams);
   const rate = new Decimal(input.ratePerGram);
@@ -62,30 +70,31 @@ export async function createSale(
 
   const total = weight.times(rate).toDecimalPlaces(2);
 
-  return prisma.$transaction(async (tx) => {
-    await assertMetalActive(tx, input.metalId);
-    await assertPurityActive(tx, input.purityId, input.metalId);
+  return runTransaction(async (t) => {
+    await assertMetalActive(t, input.metalId);
+    await assertPurityActive(t, input.purityId, input.metalId);
 
-    const sale = await tx.sale.create({
-      data: {
+    const sale = await Sale.create(
+      {
         invoiceNumber: input.invoiceNumber,
         date: input.date,
         buyerName: input.buyerName,
-        buyerContact: input.buyerContact,
-        counterpartyId: input.counterpartyId,
+        buyerContact: input.buyerContact || null,
+        counterpartyId: input.counterpartyId || null,
         metalId: input.metalId,
         purityId: input.purityId,
-        weightGrams: weight,
-        ratePerGram: rate,
-        totalAmount: total,
+        weightGrams: weight.toString(),
+        ratePerGram: rate.toString(),
+        totalAmount: total.toString(),
         paymentMode: input.paymentMode,
-        notes: input.notes,
+        notes: input.notes || null,
         status: "DRAFT",
         createdById: actorId,
       },
-    });
+      { transaction: t }
+    );
 
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "CREATE",
       entityType: "Sale",
       entityId: sale.id,
@@ -97,7 +106,7 @@ export async function createSale(
       description: `Sale draft created: ${sale.invoiceNumber}`,
     });
 
-    return sale;
+    return sale.get({ plain: true });
   });
 }
 
@@ -108,45 +117,53 @@ export async function createSale(
 export async function postSale(
   actorId: string,
   _actorRole: Role,
-  saleId: string,
+  saleId: string
 ) {
-  return prisma.$transaction(async (tx) => {
-    const sale = await tx.sale.findUniqueOrThrow({ where: { id: saleId } });
+  return runTransaction(async (t) => {
+    const sale = await Sale.findByPk(saleId, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (!sale) {
+      throw new Error(`Sale ${saleId} not found.`);
+    }
 
     if (sale.status !== "DRAFT") {
       throw new Error(
-        `Sale ${saleId} is in status ${sale.status} and cannot be posted.`,
+        `Sale ${saleId} is in status ${sale.status} and cannot be posted.`
       );
     }
 
     // Validate metal/purity still active
-    await assertMetalActive(tx, sale.metalId);
-    await assertPurityActive(tx, sale.purityId, sale.metalId);
+    await assertMetalActive(t, sale.metalId);
+    await assertPurityActive(t, sale.purityId, sale.metalId);
+
+    const saleWeight = new Decimal(sale.weightGrams);
 
     // CRITICAL: Stock check inside the same transaction
-    await assertSufficientStock(tx, sale.metalId, sale.purityId, sale.weightGrams);
+    await assertSufficientStock(t, sale.metalId, sale.purityId, saleWeight);
 
     // 1. Update Sale status
-    await tx.sale.update({
-      where: { id: saleId },
-      data: { status: "POSTED" },
-    });
+    sale.status = "POSTED";
+    await sale.save({ transaction: t });
 
     // 2. Create append-only StockMovement (negative = stock out)
-    await tx.stockMovement.create({
-      data: {
+    await StockMovement.create(
+      {
         metalId: sale.metalId,
         purityId: sale.purityId,
         movementType: "SALE",
-        weightGrams: sale.weightGrams.negated(), // negative
+        weightGrams: saleWeight.negated().toString(), // negative
         saleId: sale.id,
         createdById: actorId,
         reference: `Sale ${sale.invoiceNumber}`,
       },
-    });
+      { transaction: t }
+    );
 
     // 3. Audit
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "POST",
       entityType: "Sale",
       entityId: saleId,
@@ -156,13 +173,18 @@ export async function postSale(
       purityId: sale.purityId,
       prevState: { status: "DRAFT" },
       nextState: { status: "POSTED" },
-      description: `Sale posted: ${sale.invoiceNumber} -${sale.weightGrams.toFixed(4)}g`,
+      description: `Sale posted: ${sale.invoiceNumber} -${saleWeight.toFixed(4)}g`,
     });
 
-    return tx.sale.findUniqueOrThrow({
-      where: { id: saleId },
-      include: { metal: true, purity: true },
+    const reloaded = await Sale.findByPk(saleId, {
+      include: [
+        { model: Metal, as: "metal" },
+        { model: Purity, as: "purity" },
+      ],
+      transaction: t,
     });
+
+    return reloaded!.get({ plain: true });
   });
 }
 
@@ -174,35 +196,38 @@ export async function cancelSale(
   actorId: string,
   actorRole: Role,
   saleId: string,
-  reason: string,
+  reason: string
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("cancel sale");
   }
   if (!reason?.trim()) throw new Error("Cancellation reason is required.");
 
-  return prisma.$transaction(async (tx) => {
-    const sale = await tx.sale.findUniqueOrThrow({ where: { id: saleId } });
+  return runTransaction(async (t) => {
+    const sale = await Sale.findByPk(saleId, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (!sale) {
+      throw new Error(`Sale ${saleId} not found.`);
+    }
 
     if (sale.status !== "POSTED") {
       throw new Error(
-        `Only POSTED sales can be cancelled. Current status: ${sale.status}`,
+        `Only POSTED sales can be cancelled. Current status: ${sale.status}`
       );
     }
 
     // 1. Mark CANCELLED
-    await tx.sale.update({
-      where: { id: saleId },
-      data: {
-        status: "CANCELLED",
-        cancelReason: reason.trim(),
-        cancelledAt: new Date(),
-      },
-    });
+    sale.status = "CANCELLED";
+    sale.cancelReason = reason.trim();
+    sale.cancelledAt = new Date();
+    await sale.save({ transaction: t });
 
     // 2. Reversing movement (positive = stock in)
-    await tx.stockMovement.create({
-      data: {
+    await StockMovement.create(
+      {
         metalId: sale.metalId,
         purityId: sale.purityId,
         movementType: "SALE_CANCEL",
@@ -211,10 +236,11 @@ export async function cancelSale(
         createdById: actorId,
         reference: `Cancel of sale ${sale.invoiceNumber}: ${reason}`,
       },
-    });
+      { transaction: t }
+    );
 
     // 3. Audit
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "CANCEL",
       entityType: "Sale",
       entityId: saleId,
@@ -227,7 +253,7 @@ export async function cancelSale(
       description: `Sale cancelled: ${sale.invoiceNumber}. Reason: ${reason}`,
     });
 
-    return tx.sale.findUniqueOrThrow({ where: { id: saleId } });
+    return sale.get({ plain: true });
   });
 }
 
@@ -236,29 +262,38 @@ export async function cancelSale(
 // ---------------------------------------------------------------------------
 
 export async function getSale(id: string) {
-  return prisma.sale.findUniqueOrThrow({
-    where: { id },
-    include: { metal: true, purity: true, counterparty: true, createdBy: true },
+  const sale = await Sale.findByPk(id, {
+    include: [
+      { model: Metal, as: "metal" },
+      { model: Purity, as: "purity" },
+      { model: Counterparty, as: "counterparty" },
+      { model: User, as: "createdBy" },
+    ],
   });
+  if (!sale) throw new Error(`Sale ${id} not found.`);
+  return sale.get({ plain: true });
 }
 
 export async function listSales(opts?: {
   metalId?: string;
   purityId?: string;
-  status?: "DRAFT" | "POSTED" | "CANCELLED";
+  status?: TransactionStatus;
 }) {
-  return prisma.sale.findMany({
-    where: {
-      ...(opts?.metalId ? { metalId: opts.metalId } : {}),
-      ...(opts?.purityId ? { purityId: opts.purityId } : {}),
-      ...(opts?.status ? { status: opts.status } : {}),
-    },
-    include: {
-      metal: true,
-      purity: true,
-      counterparty: true,
-      createdBy: { select: { id: true, name: true, email: true } },
-    },
-    orderBy: { date: "desc" },
+  const where: any = {};
+  if (opts?.metalId) where.metalId = opts.metalId;
+  if (opts?.purityId) where.purityId = opts.purityId;
+  if (opts?.status) where.status = opts.status;
+
+  const sales = await Sale.findAll({
+    where,
+    include: [
+      { model: Metal, as: "metal" },
+      { model: Purity, as: "purity" },
+      { model: Counterparty, as: "counterparty" },
+      { model: User, as: "createdBy", attributes: ["id", "name", "email"] },
+    ],
+    order: [["date", "DESC"]],
   });
+
+  return sales.map((s) => s.get({ plain: true }));
 }

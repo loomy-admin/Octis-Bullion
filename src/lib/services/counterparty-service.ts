@@ -9,10 +9,14 @@
  *   - Full audit logging
  */
 
-import { prisma } from "@/lib/db/client";
+import { Op } from "sequelize";
+import { Counterparty } from "@/lib/db/models/Counterparty";
+import { Purchase } from "@/lib/db/models/Purchase";
+import { Sale } from "@/lib/db/models/Sale";
+import { runTransaction } from "@/lib/db";
 import { writeAudit } from "./audit-service";
 import { UnauthorizedError } from "./stock-service";
-import type { Role, CounterpartyType } from "@prisma/client";
+import type { Role, CounterpartyType } from "@/lib/db/types";
 
 export interface CreateCounterpartyInput {
   name: string;
@@ -33,17 +37,21 @@ export interface UpdateCounterpartyInput {
 }
 
 export async function getCounterparty(id: string) {
-  return prisma.counterparty.findUniqueOrThrow({
-    where: { id },
-    include: {
-      _count: {
-        select: {
-          purchases: true,
-          sales: true,
-        },
-      },
+  const cp = await Counterparty.findByPk(id);
+  if (!cp) throw new Error(`Counterparty ${id} not found.`);
+
+  const [purchases, sales] = await Promise.all([
+    Purchase.count({ where: { counterpartyId: id } }),
+    Sale.count({ where: { counterpartyId: id } }),
+  ]);
+
+  return {
+    ...cp.get({ plain: true }),
+    _count: {
+      purchases,
+      sales,
     },
-  });
+  };
 }
 
 export async function listCounterparties(filters?: {
@@ -51,7 +59,7 @@ export async function listCounterparties(filters?: {
   isActive?: boolean;
   search?: string;
 }) {
-  const where: import("@prisma/client").Prisma.CounterpartyWhereInput = {};
+  const where: any = {};
 
   if (filters?.type) {
     where.type = filters.type;
@@ -62,32 +70,40 @@ export async function listCounterparties(filters?: {
   }
 
   if (filters?.search) {
-    const s = filters.search.trim();
-    where.OR = [
-      { name: { contains: s, mode: "insensitive" } },
-      { phone: { contains: s, mode: "insensitive" } },
-      { email: { contains: s, mode: "insensitive" } },
+    const s = `%${filters.search.trim()}%`;
+    where[Op.or] = [
+      { name: { [Op.like]: s } },
+      { phone: { [Op.like]: s } },
+      { email: { [Op.like]: s } },
     ];
   }
 
-  return prisma.counterparty.findMany({
+  const counterparties = await Counterparty.findAll({
     where,
-    include: {
-      _count: {
-        select: {
-          purchases: true,
-          sales: true,
-        },
-      },
-    },
-    orderBy: { name: "asc" },
+    order: [["name", "ASC"]],
   });
+
+  return Promise.all(
+    counterparties.map(async (cp) => {
+      const [purchases, sales] = await Promise.all([
+        Purchase.count({ where: { counterpartyId: cp.id } }),
+        Sale.count({ where: { counterpartyId: cp.id } }),
+      ]);
+      return {
+        ...cp.get({ plain: true }),
+        _count: {
+          purchases,
+          sales,
+        },
+      };
+    })
+  );
 }
 
 export async function createCounterparty(
   actorId: string,
   actorRole: Role,
-  input: CreateCounterpartyInput,
+  input: CreateCounterpartyInput
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("create counterparty");
@@ -96,9 +112,9 @@ export async function createCounterparty(
   const name = input.name.trim();
   if (!name) throw new Error("Counterparty name is required.");
 
-  return prisma.$transaction(async (tx) => {
-    const counterparty = await tx.counterparty.create({
-      data: {
+  return runTransaction(async (t) => {
+    const counterparty = await Counterparty.create(
+      {
         name,
         phone: input.phone?.trim() || null,
         email: input.email?.trim() || null,
@@ -106,9 +122,10 @@ export async function createCounterparty(
         type: input.type,
         notes: input.notes?.trim() || null,
       },
-    });
+      { transaction: t }
+    );
 
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "CREATE",
       entityType: "Counterparty",
       entityId: counterparty.id,
@@ -120,7 +137,7 @@ export async function createCounterparty(
       description: `Created counterparty ${counterparty.name} (${counterparty.type})`,
     });
 
-    return counterparty;
+    return counterparty.get({ plain: true });
   });
 }
 
@@ -128,38 +145,39 @@ export async function updateCounterparty(
   actorId: string,
   actorRole: Role,
   id: string,
-  input: UpdateCounterpartyInput,
+  input: UpdateCounterpartyInput
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("update counterparty");
   }
 
-  return prisma.$transaction(async (tx) => {
-    const prev = await tx.counterparty.findUniqueOrThrow({ where: { id } });
+  return runTransaction(async (t) => {
+    const prev = await Counterparty.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!prev) throw new Error(`Counterparty ${id} not found.`);
 
-    const updated = await tx.counterparty.update({
-      where: { id },
-      data: {
-        ...(input.name !== undefined ? { name: input.name.trim() } : {}),
-        ...(input.phone !== undefined ? { phone: input.phone?.trim() || null } : {}),
-        ...(input.email !== undefined ? { email: input.email?.trim() || null } : {}),
-        ...(input.address !== undefined ? { address: input.address?.trim() || null } : {}),
-        ...(input.type !== undefined ? { type: input.type } : {}),
-        ...(input.notes !== undefined ? { notes: input.notes?.trim() || null } : {}),
-      },
-    });
+    const prevName = prev.name;
+    const prevType = prev.type;
 
-    await writeAudit(tx, {
+    if (input.name !== undefined) prev.name = input.name.trim();
+    if (input.phone !== undefined) prev.phone = input.phone?.trim() || null;
+    if (input.email !== undefined) prev.email = input.email?.trim() || null;
+    if (input.address !== undefined) prev.address = input.address?.trim() || null;
+    if (input.type !== undefined) prev.type = input.type;
+    if (input.notes !== undefined) prev.notes = input.notes?.trim() || null;
+
+    await prev.save({ transaction: t });
+
+    await writeAudit(t, {
       action: "UPDATE",
       entityType: "Counterparty",
       entityId: id,
       actorId,
-      prevState: { name: prev.name, type: prev.type },
-      nextState: { name: updated.name, type: updated.type },
-      description: `Updated counterparty ${prev.name}`,
+      prevState: { name: prevName, type: prevType },
+      nextState: { name: prev.name, type: prev.type },
+      description: `Updated counterparty ${prevName}`,
     });
 
-    return updated;
+    return prev.get({ plain: true });
   });
 }
 
@@ -167,30 +185,30 @@ export async function setCounterpartyActive(
   actorId: string,
   actorRole: Role,
   id: string,
-  isActive: boolean,
+  isActive: boolean
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("activate/deactivate counterparty");
   }
 
-  return prisma.$transaction(async (tx) => {
-    const prev = await tx.counterparty.findUniqueOrThrow({ where: { id } });
+  return runTransaction(async (t) => {
+    const prev = await Counterparty.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!prev) throw new Error(`Counterparty ${id} not found.`);
 
-    const updated = await tx.counterparty.update({
-      where: { id },
-      data: { isActive },
-    });
+    const prevActive = prev.isActive;
+    prev.isActive = isActive;
+    await prev.save({ transaction: t });
 
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: isActive ? "ACTIVATE" : "DEACTIVATE",
       entityType: "Counterparty",
       entityId: id,
       actorId,
-      prevState: { isActive: prev.isActive },
+      prevState: { isActive: prevActive },
       nextState: { isActive },
       description: `Counterparty ${prev.name} ${isActive ? "activated" : "deactivated"}`,
     });
 
-    return updated;
+    return prev.get({ plain: true });
   });
 }

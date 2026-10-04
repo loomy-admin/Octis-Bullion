@@ -18,7 +18,7 @@ export default async function MastersPage() {
     name: m.name,
     type: m.type,
     isActive: m.isActive,
-    purities: m.purities.map((p) => ({
+    purities: (m.purities || []).map((p: any) => ({
       id: p.id,
       metalId: p.metalId,
       label: p.label,

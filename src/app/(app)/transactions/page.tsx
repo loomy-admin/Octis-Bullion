@@ -21,10 +21,10 @@ export default async function TransactionsPage() {
     movementType: m.movementType,
     weightGrams: m.weightGrams.toString(),
     reference: m.reference,
-    createdAt: m.createdAt.toISOString(),
-    metal: { id: m.metal.id, name: m.metal.name, code: m.metal.code },
-    purity: { id: m.purity.id, label: m.purity.label, fineness: m.purity.fineness.toString() },
-    createdBy: { id: m.createdBy.id, name: m.createdBy.name, role: m.createdBy.role },
+    createdAt: m.createdAt ? new Date(m.createdAt).toISOString() : new Date().toISOString(),
+    metal: m.metal ? { id: m.metal.id, name: m.metal.name, code: m.metal.code } : { id: m.metalId, name: "", code: "" },
+    purity: m.purity ? { id: m.purity.id, label: m.purity.label, fineness: m.purity.fineness.toString() } : { id: m.purityId, label: "", fineness: "0" },
+    createdBy: m.createdBy ? { id: m.createdBy.id, name: m.createdBy.name, role: m.createdBy.role } : { id: m.createdById, name: "System", role: "STAFF" },
     purchase: m.purchase ? {
       id: m.purchase.id,
       invoiceNumber: m.purchase.invoiceNumber,
@@ -45,7 +45,7 @@ export default async function TransactionsPage() {
     } : null,
     openingStock: m.openingStock ? {
       id: m.openingStock.id,
-      effectiveDate: m.openingStock.effectiveDate.toISOString(),
+      effectiveDate: new Date(m.openingStock.effectiveDate).toISOString(),
     } : null,
   }));
 

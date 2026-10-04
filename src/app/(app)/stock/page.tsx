@@ -40,7 +40,7 @@ export default async function StockPage() {
     id: m.id,
     name: m.name,
     code: m.code,
-    purities: m.purities.map((p) => ({
+    purities: (m.purities || []).map((p: any) => ({
       id: p.id,
       label: p.label,
       fineness: p.fineness.toString(),

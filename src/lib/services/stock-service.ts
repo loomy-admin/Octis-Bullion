@@ -3,19 +3,23 @@
  *
  * Authoritative service for all stock queries and calculations.
  * Stock is derived EXCLUSIVELY from the append-only StockMovement table.
- * This service NEVER mutates stock directly — mutations happen via
- * PurchaseService, SaleService, and AdjustmentService within Prisma
- * transactions that also write the corresponding StockMovement row.
- *
- * Invariant:
- *   currentStock(metalId, purityId) =
- *       SUM(weightGrams) of all POSTED StockMovement rows
- *       WHERE metalId AND purityId
- *       (weightGrams is signed: positive = in, negative = out)
+ * Clean pure Sequelize implementation.
  */
 
 import Decimal from "decimal.js";
-import { prisma } from "@/lib/db/client";
+import type { Transaction } from "sequelize";
+import { Op, fn, col } from "sequelize";
+import {
+  StockMovement,
+  Metal,
+  Purity,
+  Purchase,
+  Sale,
+  StockAdjustment,
+  OpeningStock,
+  User,
+} from "@/lib/db";
+import type { MovementType } from "@/lib/db/types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,12 +51,13 @@ export interface StockPosition {
 export async function getCurrentStock(
   metalId: string,
   purityId: string,
+  t?: Transaction
 ): Promise<Decimal> {
-  const result = await prisma.stockMovement.aggregate({
+  const sum = await StockMovement.sum("weightGrams", {
     where: { metalId, purityId },
-    _sum: { weightGrams: true },
+    transaction: t,
   });
-  return result._sum.weightGrams ?? new Decimal(0);
+  return sum != null ? new Decimal(sum) : new Decimal(0);
 }
 
 /**
@@ -60,13 +65,19 @@ export async function getCurrentStock(
  */
 export async function getStockPosition(
   metalId: string,
-  purityId: string,
+  purityId: string
 ): Promise<StockPosition> {
-  const [metal, purity, movements] = await Promise.all([
-    prisma.metal.findUniqueOrThrow({ where: { id: metalId } }),
-    prisma.purity.findUniqueOrThrow({ where: { id: purityId } }),
-    prisma.stockMovement.findMany({ where: { metalId, purityId } }),
+  const [metalRow, purityRow, movements] = await Promise.all([
+    Metal.findByPk(metalId, { raw: true }),
+    Purity.findByPk(purityId, { raw: true }),
+    StockMovement.findAll({ where: { metalId, purityId }, raw: true }),
   ]);
+
+  if (!metalRow) throw new Error(`Metal ${metalId} not found.`);
+  if (!purityRow) throw new Error(`Purity ${purityId} not found.`);
+
+  const metal = metalRow as unknown as { id: string; code: string; name: string };
+  const purity = purityRow as unknown as { id: string; label: string; fineness: string };
 
   let opening = new Decimal(0);
   let purchased = new Decimal(0);
@@ -74,8 +85,8 @@ export async function getStockPosition(
   let adjIncrease = new Decimal(0);
   let adjDecrease = new Decimal(0);
 
-  for (const m of movements) {
-    const w = m.weightGrams;
+  for (const m of movements as unknown as { weightGrams: string; movementType: string }[]) {
+    const w = new Decimal(m.weightGrams);
     switch (m.movementType) {
       case "OPENING":
         opening = opening.plus(w);
@@ -114,7 +125,7 @@ export async function getStockPosition(
     metalName: metal.name,
     purityId,
     purityLabel: purity.label,
-    fineness: purity.fineness,
+    fineness: new Decimal(purity.fineness),
     openingWeightGrams: opening,
     purchasedWeightGrams: purchased,
     soldWeightGrams: sold,
@@ -136,27 +147,28 @@ export interface DetailedStockPosition extends StockPosition {
  * Get all stock positions across all active (Metal × Purity) pairs.
  */
 export async function getAllStockPositions(): Promise<StockPosition[]> {
-  // Find all active metals and their purities, plus any with movements
-  const purities = await prisma.purity.findMany({
+  const purities = await Purity.findAll({
     where: { isActive: true },
-    select: { metalId: true, id: true },
+    attributes: ["metalId", "id"],
+    raw: true,
   });
 
-  const movementPairs = await prisma.stockMovement.findMany({
-    select: { metalId: true, purityId: true },
-    distinct: ["metalId", "purityId"],
+  const movementPairs = await StockMovement.findAll({
+    attributes: ["metalId", "purityId"],
+    group: ["metalId", "purityId"],
+    raw: true,
   });
 
   const pairMap = new Map<string, { metalId: string; purityId: string }>();
-  for (const p of purities) {
+  for (const p of purities as unknown as { metalId: string; id: string }[]) {
     pairMap.set(`${p.metalId}_${p.id}`, { metalId: p.metalId, purityId: p.id });
   }
-  for (const p of movementPairs) {
+  for (const p of movementPairs as unknown as { metalId: string; purityId: string }[]) {
     pairMap.set(`${p.metalId}_${p.purityId}`, { metalId: p.metalId, purityId: p.purityId });
   }
 
   return Promise.all(
-    Array.from(pairMap.values()).map((p) => getStockPosition(p.metalId, p.purityId)),
+    Array.from(pairMap.values()).map((p) => getStockPosition(p.metalId, p.purityId))
   );
 }
 
@@ -169,50 +181,53 @@ export async function getDetailedStockPositions(): Promise<DetailedStockPosition
   return Promise.all(
     basePositions.map(async (pos) => {
       const [purchaseAgg, saleAgg, opening] = await Promise.all([
-        prisma.purchase.aggregate({
+        Purchase.findAll({
+          attributes: [
+            [fn("SUM", col("totalAmount")), "totalAmount"],
+            [fn("SUM", col("weightGrams")), "weightGrams"],
+          ],
           where: {
             metalId: pos.metalId,
             purityId: pos.purityId,
             status: "POSTED",
           },
-          _sum: {
-            totalAmount: true,
-            weightGrams: true,
-          },
+          raw: true,
         }),
-        prisma.sale.aggregate({
+        Sale.findAll({
+          attributes: [
+            [fn("SUM", col("totalAmount")), "totalAmount"],
+            [fn("SUM", col("weightGrams")), "weightGrams"],
+          ],
           where: {
             metalId: pos.metalId,
             purityId: pos.purityId,
             status: "POSTED",
           },
-          _sum: {
-            totalAmount: true,
-            weightGrams: true,
-          },
+          raw: true,
         }),
-        prisma.openingStock.findUnique({
+        OpeningStock.findOne({
           where: {
-            metalId_purityId: {
-              metalId: pos.metalId,
-              purityId: pos.purityId,
-            },
+            metalId: pos.metalId,
+            purityId: pos.purityId,
           },
         }),
       ]);
 
-      const totalPurchaseValue = purchaseAgg._sum.totalAmount != null
-        ? new Decimal(purchaseAgg._sum.totalAmount.toString())
+      const pRow = (purchaseAgg?.[0] as any) || {};
+      const sRow = (saleAgg?.[0] as any) || {};
+
+      const totalPurchaseValue = pRow.totalAmount != null
+        ? new Decimal(pRow.totalAmount.toString())
         : new Decimal(0);
-      const totalPurchasedWeight = purchaseAgg._sum.weightGrams != null
-        ? new Decimal(purchaseAgg._sum.weightGrams.toString())
+      const totalPurchasedWeight = pRow.weightGrams != null
+        ? new Decimal(pRow.weightGrams.toString())
         : new Decimal(0);
 
-      const totalSalesValue = saleAgg._sum.totalAmount != null
-        ? new Decimal(saleAgg._sum.totalAmount.toString())
+      const totalSalesValue = sRow.totalAmount != null
+        ? new Decimal(sRow.totalAmount.toString())
         : new Decimal(0);
-      const totalSoldWeight = saleAgg._sum.weightGrams != null
-        ? new Decimal(saleAgg._sum.weightGrams.toString())
+      const totalSoldWeight = sRow.weightGrams != null
+        ? new Decimal(sRow.weightGrams.toString())
         : new Decimal(0);
 
       const avgPurchaseRate = totalPurchasedWeight.greaterThan(0)
@@ -231,7 +246,7 @@ export async function getDetailedStockPositions(): Promise<DetailedStockPosition
         totalSalesValue,
         hasOpeningStock: !!opening,
       };
-    }),
+    })
   );
 }
 
@@ -239,15 +254,16 @@ export async function getDetailedStockPositions(): Promise<DetailedStockPosition
  * Get movement history for a specific bucket.
  */
 export async function getBucketMovements(metalId: string, purityId: string) {
-  return prisma.stockMovement.findMany({
+  const movements = await StockMovement.findAll({
     where: { metalId, purityId },
-    include: {
-      metal: true,
-      purity: true,
-      createdBy: { select: { id: true, name: true, role: true } },
-    },
-    orderBy: { createdAt: "desc" },
+    include: [
+      { model: Metal, as: "metal" },
+      { model: Purity, as: "purity" },
+      { model: User, as: "createdBy", attributes: ["id", "name", "role"] },
+    ],
+    order: [["createdAt", "DESC"]],
   });
+  return movements.map((m) => m.get({ plain: true }));
 }
 
 /**
@@ -256,75 +272,68 @@ export async function getBucketMovements(metalId: string, purityId: string) {
 export async function listStockMovements(filters?: {
   metalId?: string;
   purityId?: string;
-  movementType?: import("@prisma/client").MovementType;
+  movementType?: MovementType;
   startDate?: Date;
   endDate?: Date;
   limit?: number;
   skip?: number;
 }) {
-  const where: import("@prisma/client").Prisma.StockMovementWhereInput = {};
+  const where: any = {};
   if (filters?.metalId) where.metalId = filters.metalId;
   if (filters?.purityId) where.purityId = filters.purityId;
   if (filters?.movementType) where.movementType = filters.movementType;
   if (filters?.startDate || filters?.endDate) {
     where.createdAt = {};
-    if (filters.startDate) where.createdAt.gte = filters.startDate;
-    if (filters.endDate) where.createdAt.lte = filters.endDate;
+    if (filters.startDate) where.createdAt[Op.gte] = filters.startDate;
+    if (filters.endDate) where.createdAt[Op.lte] = filters.endDate;
   }
 
-  return prisma.stockMovement.findMany({
+  const movements = await StockMovement.findAll({
     where,
-    include: {
-      metal: true,
-      purity: true,
-      createdBy: { select: { id: true, name: true, role: true } },
-      purchase: { select: { id: true, invoiceNumber: true, supplierName: true, status: true } },
-      sale: { select: { id: true, invoiceNumber: true, buyerName: true, status: true } },
-      adjustment: { select: { id: true, reason: true, direction: true, status: true } },
-      openingStock: { select: { id: true, effectiveDate: true } },
-    },
-    orderBy: { createdAt: "desc" },
-    take: filters?.limit ?? 100,
-    skip: filters?.skip ?? 0,
+    include: [
+      { model: Metal, as: "metal" },
+      { model: Purity, as: "purity" },
+      { model: User, as: "createdBy", attributes: ["id", "name", "role"] },
+      { model: Purchase, as: "purchase", attributes: ["id", "invoiceNumber", "supplierName", "status"] },
+      { model: Sale, as: "sale", attributes: ["id", "invoiceNumber", "buyerName", "status"] },
+      { model: StockAdjustment, as: "adjustment", attributes: ["id", "reason", "direction", "status"] },
+      { model: OpeningStock, as: "openingStock", attributes: ["id", "effectiveDate"] },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit: filters?.limit ?? 100,
+    offset: filters?.skip ?? 0,
   });
+
+  return movements.map((m) => m.get({ plain: true }));
 }
 
 /**
  * Validate that a given (metalId, purityId) has at least `requiredGrams`
  * available. Throws a descriptive error if not.
- * Must be called INSIDE a Prisma transaction to be safe.
+ * Must be called INSIDE a transaction to be safe.
  */
 export async function assertSufficientStock(
-  tx: import("@prisma/client").Prisma.TransactionClient,
+  t: Transaction | undefined,
   metalId: string,
   purityId: string,
-  requiredGrams: Decimal,
+  requiredGrams: Decimal
 ): Promise<void> {
   // Concurrency Guard: Lock the bucket's purity record using SELECT ... FOR UPDATE.
-  // This serializes concurrent sales/adjustments competing for the same physical stock pool.
-  try {
-    if (typeof (tx as unknown as { $executeRawUnsafe?: unknown }).$executeRawUnsafe === "function") {
-      await (tx as unknown as { $executeRawUnsafe: (query: string, ...args: unknown[]) => Promise<unknown> }).$executeRawUnsafe(
-        `SELECT id FROM purity WHERE id = $1 FOR UPDATE`,
-        purityId,
-      );
-    }
-  } catch {
-    // Fallback if provider or in-memory mock does not support raw locking
+  if (t) {
+    await Purity.findByPk(purityId, { lock: t.LOCK.UPDATE, transaction: t });
   }
 
-  const result = await tx.stockMovement.aggregate({
+  const sum = await StockMovement.sum("weightGrams", {
     where: { metalId, purityId },
-    _sum: { weightGrams: true },
+    transaction: t,
   });
-  const rawAvailable = result._sum.weightGrams;
-  const available = rawAvailable != null ? new Decimal(rawAvailable.toString()) : new Decimal(0);
+  const available = sum != null ? new Decimal(sum) : new Decimal(0);
   if (available.lessThan(requiredGrams)) {
     throw new InsufficientStockError(
       metalId,
       purityId,
       available,
-      requiredGrams,
+      requiredGrams
     );
   }
 }
@@ -338,11 +347,11 @@ export class InsufficientStockError extends Error {
     public readonly metalId: string,
     public readonly purityId: string,
     public readonly available: Decimal,
-    public readonly requested: Decimal,
+    public readonly requested: Decimal
   ) {
     super(
       `Insufficient stock for metal=${metalId} purity=${purityId}. ` +
-        `Available: ${available.toFixed(4)}g, Requested: ${requested.toFixed(4)}g`,
+        `Available: ${available.toFixed(4)}g, Requested: ${requested.toFixed(4)}g`
     );
     this.name = "InsufficientStockError";
   }

@@ -13,11 +13,11 @@
  */
 
 import Decimal from "decimal.js";
-import { prisma } from "@/lib/db/client";
+import { OpeningStock, StockMovement, Metal, Purity, runTransaction } from "@/lib/db";
 import { writeAudit } from "./audit-service";
 import { assertMetalActive, assertPurityActive } from "./master-service";
 import { UnauthorizedError } from "./stock-service";
-import type { Role } from "@prisma/client";
+import type { Role } from "@/lib/db/types";
 
 export interface SetOpeningStockInput {
   metalId: string;
@@ -31,7 +31,7 @@ export interface SetOpeningStockInput {
 export async function setOpeningStock(
   actorId: string,
   actorRole: Role,
-  input: SetOpeningStockInput,
+  input: SetOpeningStockInput
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("set opening stock");
@@ -40,49 +40,53 @@ export async function setOpeningStock(
   const weight = new Decimal(input.weightGrams);
   if (weight.lessThan(0)) throw new Error("Opening stock weight cannot be negative.");
 
-  return prisma.$transaction(async (tx) => {
+  return runTransaction(async (t) => {
     // Validate master data
-    await assertMetalActive(tx, input.metalId);
-    await assertPurityActive(tx, input.purityId, input.metalId);
+    await assertMetalActive(t, input.metalId);
+    await assertPurityActive(t, input.purityId, input.metalId);
 
     // Enforce uniqueness: only one opening stock per (metal, purity)
-    const existing = await tx.openingStock.findUnique({
-      where: { metalId_purityId: { metalId: input.metalId, purityId: input.purityId } },
+    const existing = await OpeningStock.findOne({
+      where: { metalId: input.metalId, purityId: input.purityId },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
     });
     if (existing) {
       throw new Error(
         `Opening stock already exists for metalId=${input.metalId}, purityId=${input.purityId}. ` +
-          `Use a StockAdjustment to correct the balance.`,
+          `Use a StockAdjustment to correct the balance.`
       );
     }
 
     // 1. Create OpeningStock record
-    const opening = await tx.openingStock.create({
-      data: {
+    const opening = await OpeningStock.create(
+      {
         metalId: input.metalId,
         purityId: input.purityId,
-        weightGrams: weight,
+        weightGrams: weight.toString(),
         effectiveDate: input.effectiveDate,
-        notes: input.notes,
+        notes: input.notes || null,
         createdById: actorId,
       },
-    });
+      { transaction: t }
+    );
 
     // 2. Create append-only StockMovement (positive)
-    await tx.stockMovement.create({
-      data: {
+    await StockMovement.create(
+      {
         metalId: input.metalId,
         purityId: input.purityId,
         movementType: "OPENING",
-        weightGrams: weight,
+        weightGrams: weight.toString(),
         openingStockId: opening.id,
         createdById: actorId,
         reference: `Opening stock: ${weight.toFixed(4)}g`,
       },
-    });
+      { transaction: t }
+    );
 
     // 3. Audit
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "CREATE",
       entityType: "OpeningStock",
       entityId: opening.id,
@@ -93,13 +97,17 @@ export async function setOpeningStock(
       description: `Opening stock set: ${weight.toFixed(4)}g`,
     });
 
-    return opening;
+    return opening.get({ plain: true });
   });
 }
 
 export async function getOpeningStock(metalId: string, purityId: string) {
-  return prisma.openingStock.findUnique({
-    where: { metalId_purityId: { metalId, purityId } },
-    include: { metal: true, purity: true },
+  const opening = await OpeningStock.findOne({
+    where: { metalId, purityId },
+    include: [
+      { model: Metal, as: "metal" },
+      { model: Purity, as: "purity" },
+    ],
   });
+  return opening ? opening.get({ plain: true }) : null;
 }

@@ -8,36 +8,44 @@
  *   - Inactive entities cannot be used for new transactions
  */
 
-import { prisma } from "@/lib/db/client";
+import type { Transaction } from "sequelize";
+import { Metal } from "@/lib/db/models/Metal";
+import { Purity } from "@/lib/db/models/Purity";
+import { runTransaction } from "@/lib/db";
 import { writeAudit } from "./audit-service";
 import { InactiveEntityError, UnauthorizedError } from "./stock-service";
-import type { Role } from "@prisma/client";
+import type { Role } from "@/lib/db/types";
+import Decimal from "decimal.js";
 
 // ---------------------------------------------------------------------------
 // Metal
 // ---------------------------------------------------------------------------
 
 export async function getMetal(id: string) {
-  return prisma.metal.findUniqueOrThrow({ where: { id } });
+  const metal = await Metal.findByPk(id);
+  if (!metal) throw new Error(`Metal ${id} not found.`);
+  return metal.get({ plain: true });
 }
 
 export async function getAllMetals(activeOnly = false) {
-  return prisma.metal.findMany({
+  const metals = await Metal.findAll({
     where: activeOnly ? { isActive: true } : undefined,
-    include: { purities: { orderBy: { sortOrder: "asc" } } },
-    orderBy: { name: "asc" },
+    include: [{ model: Purity, as: "purities" }],
+    order: [
+      ["name", "ASC"],
+      [{ model: Purity, as: "purities" }, "sortOrder", "ASC"],
+    ],
   });
+  return metals.map((m) => m.get({ plain: true }));
 }
 
 /**
  * Validate that a metal is active; throw InactiveEntityError if not.
  * Must be called inside a transaction for atomicity.
  */
-export async function assertMetalActive(
-  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
-  metalId: string,
-) {
-  const metal = await tx.metal.findUniqueOrThrow({ where: { id: metalId } });
+export async function assertMetalActive(t: Transaction | undefined, metalId: string) {
+  const metal = await Metal.findByPk(metalId, { transaction: t });
+  if (!metal) throw new Error(`Metal ${metalId} not found.`);
   if (!metal.isActive) throw new InactiveEntityError("Metal", metalId);
   return metal;
 }
@@ -46,11 +54,12 @@ export async function assertMetalActive(
  * Validate that a purity is active and belongs to the expected metal.
  */
 export async function assertPurityActive(
-  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  t: Transaction | undefined,
   purityId: string,
-  metalId: string,
+  metalId: string
 ) {
-  const purity = await tx.purity.findUniqueOrThrow({ where: { id: purityId } });
+  const purity = await Purity.findByPk(purityId, { transaction: t });
+  if (!purity) throw new Error(`Purity ${purityId} not found.`);
   if (purity.metalId !== metalId) {
     throw new Error(`Purity ${purityId} does not belong to metal ${metalId}.`);
   }
@@ -65,28 +74,29 @@ export async function setMetalActive(
   actorId: string,
   actorRole: Role,
   metalId: string,
-  isActive: boolean,
+  isActive: boolean
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("manage metal master");
   }
-  return prisma.$transaction(async (tx) => {
-    const prev = await tx.metal.findUniqueOrThrow({ where: { id: metalId } });
-    const updated = await tx.metal.update({
-      where: { id: metalId },
-      data: { isActive },
-    });
-    await writeAudit(tx, {
+  return runTransaction(async (t) => {
+    const metal = await Metal.findByPk(metalId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!metal) throw new Error(`Metal ${metalId} not found.`);
+    const prevActive = metal.isActive;
+    metal.isActive = isActive;
+    await metal.save({ transaction: t });
+
+    await writeAudit(t, {
       action: isActive ? "ACTIVATE" : "DEACTIVATE",
       entityType: "Metal",
       entityId: metalId,
       actorId,
       metalId,
-      prevState: { isActive: prev.isActive },
+      prevState: { isActive: prevActive },
       nextState: { isActive },
-      description: `Metal ${prev.name} ${isActive ? "activated" : "deactivated"}.`,
+      description: `Metal ${metal.name} ${isActive ? "activated" : "deactivated"}.`,
     });
-    return updated;
+    return metal.get({ plain: true });
   });
 }
 
@@ -97,28 +107,29 @@ export async function setPurityActive(
   actorId: string,
   actorRole: Role,
   purityId: string,
-  isActive: boolean,
+  isActive: boolean
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("manage purity master");
   }
-  return prisma.$transaction(async (tx) => {
-    const prev = await tx.purity.findUniqueOrThrow({ where: { id: purityId } });
-    const updated = await tx.purity.update({
-      where: { id: purityId },
-      data: { isActive },
-    });
-    await writeAudit(tx, {
+  return runTransaction(async (t) => {
+    const purity = await Purity.findByPk(purityId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!purity) throw new Error(`Purity ${purityId} not found.`);
+    const prevActive = purity.isActive;
+    purity.isActive = isActive;
+    await purity.save({ transaction: t });
+
+    await writeAudit(t, {
       action: isActive ? "ACTIVATE" : "DEACTIVATE",
       entityType: "Purity",
       entityId: purityId,
       actorId,
       purityId,
-      prevState: { isActive: prev.isActive },
+      prevState: { isActive: prevActive },
       nextState: { isActive },
-      description: `Purity ${prev.label} ${isActive ? "activated" : "deactivated"}.`,
+      description: `Purity ${purity.label} ${isActive ? "activated" : "deactivated"}.`,
     });
-    return updated;
+    return purity.get({ plain: true });
   });
 }
 
@@ -127,18 +138,23 @@ export async function setPurityActive(
 // ---------------------------------------------------------------------------
 
 export async function getPuritiesByMetal(metalId: string, activeOnly = false) {
-  return prisma.purity.findMany({
+  const purities = await Purity.findAll({
     where: { metalId, ...(activeOnly ? { isActive: true } : {}) },
-    orderBy: { sortOrder: "asc" },
+    order: [["sortOrder", "ASC"]],
   });
+  return purities.map((p) => p.get({ plain: true }));
 }
 
 export async function getAllPurities(activeOnly = false) {
-  return prisma.purity.findMany({
+  const purities = await Purity.findAll({
     where: activeOnly ? { isActive: true } : undefined,
-    include: { metal: true },
-    orderBy: [{ metal: { name: "asc" } }, { sortOrder: "asc" }],
+    include: [{ model: Metal, as: "metal" }],
+    order: [
+      [{ model: Metal, as: "metal" }, "name", "ASC"],
+      ["sortOrder", "ASC"],
+    ],
   });
+  return purities.map((p) => p.get({ plain: true }));
 }
 
 export async function createMetal(
@@ -148,7 +164,7 @@ export async function createMetal(
     code: string;
     name: string;
     type: "GOLD" | "SILVER";
-  },
+  }
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("create metal");
@@ -157,16 +173,17 @@ export async function createMetal(
   const code = data.code.trim().toUpperCase();
   const name = data.name.trim();
 
-  return prisma.$transaction(async (tx) => {
-    const metal = await tx.metal.create({
-      data: {
+  return runTransaction(async (t) => {
+    const metal = await Metal.create(
+      {
         code,
         name,
         type: data.type,
       },
-    });
+      { transaction: t }
+    );
 
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "CREATE",
       entityType: "Metal",
       entityId: metal.id,
@@ -176,7 +193,7 @@ export async function createMetal(
       description: `Created metal: ${name} (${code})`,
     });
 
-    return metal;
+    return metal.get({ plain: true });
   });
 }
 
@@ -186,33 +203,33 @@ export async function updateMetal(
   metalId: string,
   data: {
     name?: string;
-  },
+  }
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("update metal");
   }
 
-  return prisma.$transaction(async (tx) => {
-    const prev = await tx.metal.findUniqueOrThrow({ where: { id: metalId } });
-    const updated = await tx.metal.update({
-      where: { id: metalId },
-      data: {
-        ...(data.name ? { name: data.name.trim() } : {}),
-      },
-    });
+  return runTransaction(async (t) => {
+    const metal = await Metal.findByPk(metalId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!metal) throw new Error(`Metal ${metalId} not found.`);
+    const prevName = metal.name;
+    if (data.name) {
+      metal.name = data.name.trim();
+      await metal.save({ transaction: t });
+    }
 
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "UPDATE",
       entityType: "Metal",
       entityId: metalId,
       actorId,
       metalId,
-      prevState: { name: prev.name },
-      nextState: { name: updated.name },
-      description: `Updated metal ${prev.name}`,
+      prevState: { name: prevName },
+      nextState: { name: metal.name },
+      description: `Updated metal ${prevName}`,
     });
 
-    return updated;
+    return metal.get({ plain: true });
   });
 }
 
@@ -225,31 +242,32 @@ export async function createPurity(
     fineness: string | number;
     displayInfo?: string;
     sortOrder?: number;
-  },
+  }
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("create purity");
   }
 
-  const finenessDecimal = new (await import("decimal.js")).default(data.fineness);
+  const finenessDecimal = new Decimal(data.fineness);
   if (finenessDecimal.lessThanOrEqualTo(0) || finenessDecimal.greaterThan(1)) {
     throw new Error("Fineness must be greater than 0 and less than or equal to 1.0000");
   }
 
-  return prisma.$transaction(async (tx) => {
-    await assertMetalActive(tx, data.metalId);
+  return runTransaction(async (t) => {
+    await assertMetalActive(t, data.metalId);
 
-    const purity = await tx.purity.create({
-      data: {
+    const purity = await Purity.create(
+      {
         metalId: data.metalId,
         label: data.label.trim(),
-        fineness: finenessDecimal,
+        fineness: finenessDecimal.toString(),
         displayInfo: data.displayInfo?.trim() || null,
         sortOrder: data.sortOrder ?? 0,
       },
-    });
+      { transaction: t }
+    );
 
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "CREATE",
       entityType: "Purity",
       entityId: purity.id,
@@ -260,7 +278,7 @@ export async function createPurity(
       description: `Created purity: ${purity.label} for metalId ${data.metalId}`,
     });
 
-    return purity;
+    return purity.get({ plain: true });
   });
 }
 
@@ -273,43 +291,42 @@ export async function updatePurity(
     fineness?: string | number;
     displayInfo?: string;
     sortOrder?: number;
-  },
+  }
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("update purity");
   }
 
-  return prisma.$transaction(async (tx) => {
-    const prev = await tx.purity.findUniqueOrThrow({ where: { id: purityId } });
-    const updateData: Record<string, unknown> = {};
+  return runTransaction(async (t) => {
+    const purity = await Purity.findByPk(purityId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!purity) throw new Error(`Purity ${purityId} not found.`);
+    const prevLabel = purity.label;
+    const prevFineness = purity.fineness;
 
-    if (data.label) updateData.label = data.label.trim();
-    if (data.displayInfo !== undefined) updateData.displayInfo = data.displayInfo.trim() || null;
-    if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder;
+    if (data.label) purity.label = data.label.trim();
+    if (data.displayInfo !== undefined) purity.displayInfo = data.displayInfo?.trim() || null;
+    if (data.sortOrder !== undefined) purity.sortOrder = data.sortOrder;
     if (data.fineness !== undefined) {
-      const f = new (await import("decimal.js")).default(data.fineness);
+      const f = new Decimal(data.fineness);
       if (f.lessThanOrEqualTo(0) || f.greaterThan(1)) {
         throw new Error("Fineness must be between 0 and 1.0000");
       }
-      updateData.fineness = f;
+      purity.fineness = f.toString();
     }
 
-    const updated = await tx.purity.update({
-      where: { id: purityId },
-      data: updateData,
-    });
+    await purity.save({ transaction: t });
 
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "UPDATE",
       entityType: "Purity",
       entityId: purityId,
       actorId,
       purityId,
-      prevState: { label: prev.label, fineness: prev.fineness.toString() },
-      nextState: { label: updated.label, fineness: updated.fineness.toString() },
-      description: `Updated purity ${prev.label}`,
+      prevState: { label: prevLabel, fineness: String(prevFineness) },
+      nextState: { label: purity.label, fineness: String(purity.fineness) },
+      description: `Updated purity ${prevLabel}`,
     });
 
-    return updated;
+    return purity.get({ plain: true });
   });
 }

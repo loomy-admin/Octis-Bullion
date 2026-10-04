@@ -13,11 +13,19 @@
  */
 
 import Decimal from "decimal.js";
-import { prisma } from "@/lib/db/client";
+import {
+  Purchase,
+  StockMovement,
+  Metal,
+  Purity,
+  Counterparty,
+  User,
+  runTransaction,
+} from "@/lib/db";
 import { writeAudit } from "./audit-service";
 import { assertMetalActive, assertPurityActive } from "./master-service";
 import { UnauthorizedError } from "./stock-service";
-import type { Role, PaymentMode } from "@prisma/client";
+import type { Role, PaymentMode, TransactionStatus } from "@/lib/db/types";
 
 // ---------------------------------------------------------------------------
 // Input Types
@@ -46,7 +54,7 @@ export interface CreatePurchaseInput {
 export async function createPurchase(
   actorId: string,
   _actorRole: Role,
-  input: CreatePurchaseInput,
+  input: CreatePurchaseInput
 ) {
   const weight = new Decimal(input.weightGrams);
   const rate = new Decimal(input.ratePerGram);
@@ -57,31 +65,32 @@ export async function createPurchase(
   // Server-derived total — never trust client-supplied total
   const total = weight.times(rate).toDecimalPlaces(2);
 
-  return prisma.$transaction(async (tx) => {
+  return runTransaction(async (t) => {
     // Validate metal/purity are active (must hold for new transactions)
-    await assertMetalActive(tx, input.metalId);
-    await assertPurityActive(tx, input.purityId, input.metalId);
+    await assertMetalActive(t, input.metalId);
+    await assertPurityActive(t, input.purityId, input.metalId);
 
-    const purchase = await tx.purchase.create({
-      data: {
+    const purchase = await Purchase.create(
+      {
         invoiceNumber: input.invoiceNumber,
         date: input.date,
         supplierName: input.supplierName,
-        supplierContact: input.supplierContact,
-        counterpartyId: input.counterpartyId,
+        supplierContact: input.supplierContact || null,
+        counterpartyId: input.counterpartyId || null,
         metalId: input.metalId,
         purityId: input.purityId,
-        weightGrams: weight,
-        ratePerGram: rate,
-        totalAmount: total,
+        weightGrams: weight.toString(),
+        ratePerGram: rate.toString(),
+        totalAmount: total.toString(),
         paymentMode: input.paymentMode,
-        notes: input.notes,
+        notes: input.notes || null,
         status: "DRAFT",
         createdById: actorId,
       },
-    });
+      { transaction: t }
+    );
 
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "CREATE",
       entityType: "Purchase",
       entityId: purchase.id,
@@ -93,7 +102,7 @@ export async function createPurchase(
       description: `Purchase draft created: ${purchase.invoiceNumber}`,
     });
 
-    return purchase;
+    return purchase.get({ plain: true });
   });
 }
 
@@ -104,32 +113,35 @@ export async function createPurchase(
 export async function postPurchase(
   actorId: string,
   _actorRole: Role,
-  purchaseId: string,
+  purchaseId: string
 ) {
-  return prisma.$transaction(async (tx) => {
-    const purchase = await tx.purchase.findUniqueOrThrow({
-      where: { id: purchaseId },
+  return runTransaction(async (t) => {
+    const purchase = await Purchase.findByPk(purchaseId, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
     });
+
+    if (!purchase) {
+      throw new Error(`Purchase ${purchaseId} not found.`);
+    }
 
     if (purchase.status !== "DRAFT") {
       throw new Error(
-        `Purchase ${purchaseId} is in status ${purchase.status} and cannot be posted.`,
+        `Purchase ${purchaseId} is in status ${purchase.status} and cannot be posted.`
       );
     }
 
     // Validate metal/purity still active at posting time
-    await assertMetalActive(tx, purchase.metalId);
-    await assertPurityActive(tx, purchase.purityId, purchase.metalId);
+    await assertMetalActive(t, purchase.metalId);
+    await assertPurityActive(t, purchase.purityId, purchase.metalId);
 
     // 1. Update Purchase status
-    await tx.purchase.update({
-      where: { id: purchaseId },
-      data: { status: "POSTED" },
-    });
+    purchase.status = "POSTED";
+    await purchase.save({ transaction: t });
 
     // 2. Create append-only StockMovement (positive = stock in)
-    await tx.stockMovement.create({
-      data: {
+    await StockMovement.create(
+      {
         metalId: purchase.metalId,
         purityId: purchase.purityId,
         movementType: "PURCHASE",
@@ -138,10 +150,11 @@ export async function postPurchase(
         createdById: actorId,
         reference: `Purchase ${purchase.invoiceNumber}`,
       },
-    });
+      { transaction: t }
+    );
 
     // 3. Audit
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "POST",
       entityType: "Purchase",
       entityId: purchaseId,
@@ -151,13 +164,18 @@ export async function postPurchase(
       purityId: purchase.purityId,
       prevState: { status: "DRAFT" },
       nextState: { status: "POSTED" },
-      description: `Purchase posted: ${purchase.invoiceNumber} +${purchase.weightGrams.toFixed(4)}g`,
+      description: `Purchase posted: ${purchase.invoiceNumber} +${new Decimal(purchase.weightGrams).toFixed(4)}g`,
     });
 
-    return tx.purchase.findUniqueOrThrow({
-      where: { id: purchaseId },
-      include: { metal: true, purity: true },
+    const reloaded = await Purchase.findByPk(purchaseId, {
+      include: [
+        { model: Metal, as: "metal" },
+        { model: Purity, as: "purity" },
+      ],
+      transaction: t,
     });
+
+    return reloaded!.get({ plain: true });
   });
 }
 
@@ -169,49 +187,53 @@ export async function cancelPurchase(
   actorId: string,
   actorRole: Role,
   purchaseId: string,
-  reason: string,
+  reason: string
 ) {
   if (actorRole !== "ADMIN") {
     throw new UnauthorizedError("cancel purchase");
   }
   if (!reason?.trim()) throw new Error("Cancellation reason is required.");
 
-  return prisma.$transaction(async (tx) => {
-    const purchase = await tx.purchase.findUniqueOrThrow({
-      where: { id: purchaseId },
+  return runTransaction(async (t) => {
+    const purchase = await Purchase.findByPk(purchaseId, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
     });
+
+    if (!purchase) {
+      throw new Error(`Purchase ${purchaseId} not found.`);
+    }
 
     if (purchase.status !== "POSTED") {
       throw new Error(
-        `Only POSTED purchases can be cancelled. Current status: ${purchase.status}`,
+        `Only POSTED purchases can be cancelled. Current status: ${purchase.status}`
       );
     }
 
+    const cancelWeight = new Decimal(purchase.weightGrams).negated();
+
     // 1. Mark CANCELLED
-    await tx.purchase.update({
-      where: { id: purchaseId },
-      data: {
-        status: "CANCELLED",
-        cancelReason: reason.trim(),
-        cancelledAt: new Date(),
-      },
-    });
+    purchase.status = "CANCELLED";
+    purchase.cancelReason = reason.trim();
+    purchase.cancelledAt = new Date();
+    await purchase.save({ transaction: t });
 
     // 2. Reversing movement (negative = stock out)
-    await tx.stockMovement.create({
-      data: {
+    await StockMovement.create(
+      {
         metalId: purchase.metalId,
         purityId: purchase.purityId,
         movementType: "PURCHASE_CANCEL",
-        weightGrams: purchase.weightGrams.negated(), // negative
+        weightGrams: cancelWeight.toString(), // negative
         purchaseId: purchase.id,
         createdById: actorId,
         reference: `Cancel of purchase ${purchase.invoiceNumber}: ${reason}`,
       },
-    });
+      { transaction: t }
+    );
 
     // 3. Audit
-    await writeAudit(tx, {
+    await writeAudit(t, {
       action: "CANCEL",
       entityType: "Purchase",
       entityId: purchaseId,
@@ -224,7 +246,7 @@ export async function cancelPurchase(
       description: `Purchase cancelled: ${purchase.invoiceNumber}. Reason: ${reason}`,
     });
 
-    return tx.purchase.findUniqueOrThrow({ where: { id: purchaseId } });
+    return purchase.get({ plain: true });
   });
 }
 
@@ -233,29 +255,38 @@ export async function cancelPurchase(
 // ---------------------------------------------------------------------------
 
 export async function getPurchase(id: string) {
-  return prisma.purchase.findUniqueOrThrow({
-    where: { id },
-    include: { metal: true, purity: true, counterparty: true, createdBy: true },
+  const purchase = await Purchase.findByPk(id, {
+    include: [
+      { model: Metal, as: "metal" },
+      { model: Purity, as: "purity" },
+      { model: Counterparty, as: "counterparty" },
+      { model: User, as: "createdBy" },
+    ],
   });
+  if (!purchase) throw new Error(`Purchase ${id} not found.`);
+  return purchase.get({ plain: true });
 }
 
 export async function listPurchases(opts?: {
   metalId?: string;
   purityId?: string;
-  status?: "DRAFT" | "POSTED" | "CANCELLED";
+  status?: TransactionStatus;
 }) {
-  return prisma.purchase.findMany({
-    where: {
-      ...(opts?.metalId ? { metalId: opts.metalId } : {}),
-      ...(opts?.purityId ? { purityId: opts.purityId } : {}),
-      ...(opts?.status ? { status: opts.status } : {}),
-    },
-    include: {
-      metal: true,
-      purity: true,
-      counterparty: true,
-      createdBy: { select: { id: true, name: true, email: true } },
-    },
-    orderBy: { date: "desc" },
+  const where: any = {};
+  if (opts?.metalId) where.metalId = opts.metalId;
+  if (opts?.purityId) where.purityId = opts.purityId;
+  if (opts?.status) where.status = opts.status;
+
+  const purchases = await Purchase.findAll({
+    where,
+    include: [
+      { model: Metal, as: "metal" },
+      { model: Purity, as: "purity" },
+      { model: Counterparty, as: "counterparty" },
+      { model: User, as: "createdBy", attributes: ["id", "name", "email"] },
+    ],
+    order: [["date", "DESC"]],
   });
+
+  return purchases.map((p) => p.get({ plain: true }));
 }

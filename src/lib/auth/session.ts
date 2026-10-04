@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth/auth";
-import type { Role } from "@prisma/client";
+import type { Role } from "@/lib/db/types";
 
 export async function getCurrentUser() {
   try {

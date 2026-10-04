@@ -12,7 +12,7 @@ import {
   getBullionProfitReport,
   getTransactionHistoryReport,
 } from "@/lib/services/report-service";
-import type { MovementType } from "@prisma/client";
+import type { MovementType } from "@/lib/db/types";
 import { sanitizeErrorMessage } from "@/lib/utils/errors";
 
 /** Serializes Decimal instances and Dates to strings for safe JSON payload delivery */

@@ -4,7 +4,7 @@ import { ReportsNav } from "@/components/reports/reports-nav";
 import { ReportSummaryCards } from "@/components/reports/report-summary-cards";
 import { requireUser } from "@/lib/auth/session";
 import { getCurrentStockReport } from "@/lib/services/report-service";
-import { prisma } from "@/lib/db/client";
+import { Purchase, Sale, fn, col } from "@/lib/db";
 import { formatCurrency, formatGrams } from "@/lib/utils/helpers";
 import {
   ShoppingCart,
@@ -24,17 +24,28 @@ export const metadata = { title: "Reports — Bullion" };
 export default async function ReportsHubPage() {
   const user = await requireUser();
 
-  const [stockReport, purchaseAgg, saleAgg] = await Promise.all([
+  const [stockReport, purchaseRows, saleRows] = await Promise.all([
     getCurrentStockReport(),
-    prisma.purchase.aggregate({
+    Purchase.findAll({
+      attributes: [
+        [fn("SUM", col("totalAmount")), "totalAmount"],
+        [fn("SUM", col("weightGrams")), "weightGrams"],
+      ],
       where: { status: "POSTED" },
-      _sum: { totalAmount: true, weightGrams: true },
+      raw: true,
     }),
-    prisma.sale.aggregate({
+    Sale.findAll({
+      attributes: [
+        [fn("SUM", col("totalAmount")), "totalAmount"],
+        [fn("SUM", col("weightGrams")), "weightGrams"],
+      ],
       where: { status: "POSTED" },
-      _sum: { totalAmount: true, weightGrams: true },
+      raw: true,
     }),
   ]);
+
+  const pRow = (purchaseRows?.[0] as any) || {};
+  const sRow = (saleRows?.[0] as any) || {};
 
   const cards = [
     {
@@ -53,15 +64,15 @@ export default async function ReportsHubPage() {
     },
     {
       label: "Total Posted Purchases",
-      value: formatCurrency(purchaseAgg._sum.totalAmount?.toString() ?? "0"),
-      subtitle: `${formatGrams(purchaseAgg._sum.weightGrams?.toString() ?? "0")} acquired`,
+      value: formatCurrency(pRow.totalAmount?.toString() ?? "0"),
+      subtitle: `${formatGrams(pRow.weightGrams?.toString() ?? "0")} acquired`,
       icon: <ShoppingCart className="w-4 h-4" />,
       accent: "#22C55E",
     },
     {
       label: "Total Posted Sales",
-      value: formatCurrency(saleAgg._sum.totalAmount?.toString() ?? "0"),
-      subtitle: `${formatGrams(saleAgg._sum.weightGrams?.toString() ?? "0")} sold`,
+      value: formatCurrency(sRow.totalAmount?.toString() ?? "0"),
+      subtitle: `${formatGrams(sRow.weightGrams?.toString() ?? "0")} sold`,
       icon: <TrendingDown className="w-4 h-4" />,
       accent: "#F59E0B",
     },

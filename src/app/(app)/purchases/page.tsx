@@ -31,7 +31,7 @@ export default async function PurchasesPage() {
     id: m.id,
     name: m.name,
     code: m.code,
-    purities: m.purities.map((p) => ({
+    purities: (m.purities || []).map((p: any) => ({
       id: p.id,
       label: p.label,
       fineness: p.fineness.toString(),
@@ -56,11 +56,11 @@ export default async function PurchasesPage() {
     status: p.status,
     cancelReason: p.cancelReason,
     cancelledAt: p.cancelledAt?.toISOString() || null,
-    createdAt: p.createdAt.toISOString(),
-    metal: { id: p.metal.id, name: p.metal.name, code: p.metal.code },
-    purity: { id: p.purity.id, label: p.purity.label, fineness: p.purity.fineness.toString() },
+    createdAt: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
+    metal: p.metal ? { id: p.metal.id, name: p.metal.name, code: p.metal.code } : { id: p.metalId, name: "", code: "" },
+    purity: p.purity ? { id: p.purity.id, label: p.purity.label, fineness: p.purity.fineness.toString() } : { id: p.purityId, label: "", fineness: "0" },
     counterparty: p.counterparty ? { id: p.counterparty.id, name: p.counterparty.name, phone: p.counterparty.phone } : null,
-    createdBy: { id: p.createdBy.id, name: p.createdBy.name, email: p.createdBy.email },
+    createdBy: p.createdBy ? { id: p.createdBy.id, name: p.createdBy.name, email: p.createdBy.email } : { id: p.createdById, name: "System", email: "" },
   }));
 
   return (

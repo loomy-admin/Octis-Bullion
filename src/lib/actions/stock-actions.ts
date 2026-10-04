@@ -104,8 +104,8 @@ export async function getBucketMovementsAction(metalId: string, purityId: string
       movementType: m.movementType,
       weightGrams: m.weightGrams.toString(),
       reference: m.reference,
-      createdAt: m.createdAt.toISOString(),
-      createdByName: m.createdBy.name,
+      createdAt: m.createdAt ? new Date(m.createdAt).toISOString() : new Date().toISOString(),
+      createdByName: m.createdBy?.name || "System",
     }));
     return { success: true, movements: serialized };
   } catch (err: unknown) {

@@ -16,7 +16,7 @@ import {
   Eye,
 } from "lucide-react";
 import { formatGrams, formatDate } from "@/lib/utils/helpers";
-import type { MovementType } from "@prisma/client";
+import type { MovementType } from "@/lib/db/types";
 
 interface MovementRow {
   id: string;
