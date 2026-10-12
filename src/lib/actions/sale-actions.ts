@@ -28,14 +28,16 @@ export async function createSaleDraftAction(formData: unknown) {
       metalId: parsed.metalId,
       purityId: parsed.purityId,
       weightGrams: parsed.weightGrams,
-      ratePerGram: parsed.ratePerGram,
+      ratePerGram: parsed.ratePerGram || "0",
       paymentMode: parsed.paymentMode,
       notes: parsed.notes,
+      rateType: parsed.rateType,
     });
 
     revalidatePath("/sales");
     revalidatePath("/stock");
     revalidatePath("/dashboard");
+    revalidatePath("/payments");
     return { success: true, data: serializeForClient(sale) };
   } catch (err: unknown) {
     return { success: false, error: sanitizeErrorMessage(err, "Failed to create sale draft") };
@@ -51,6 +53,7 @@ export async function postSaleAction(saleId: string) {
     revalidatePath("/stock");
     revalidatePath("/transactions");
     revalidatePath("/dashboard");
+    revalidatePath("/payments");
     return { success: true, data: serializeForClient(sale) };
   } catch (err: unknown) {
     return { success: false, error: sanitizeErrorMessage(err, "Failed to post sale") };
@@ -72,9 +75,10 @@ export async function createAndPostSaleAction(formData: unknown) {
       metalId: parsed.metalId,
       purityId: parsed.purityId,
       weightGrams: parsed.weightGrams,
-      ratePerGram: parsed.ratePerGram,
+      ratePerGram: parsed.ratePerGram || "0",
       paymentMode: parsed.paymentMode,
       notes: parsed.notes,
+      rateType: parsed.rateType,
     });
 
     // 2. Post immediately (atomic stock check and movement inside tx)
@@ -84,9 +88,36 @@ export async function createAndPostSaleAction(formData: unknown) {
     revalidatePath("/stock");
     revalidatePath("/transactions");
     revalidatePath("/dashboard");
+    revalidatePath("/payments");
     return { success: true, data: serializeForClient(posted) };
   } catch (err: unknown) {
     return { success: false, error: sanitizeErrorMessage(err, "Failed to record sale") };
+  }
+}
+
+export async function fixSaleRateAction(formData: unknown) {
+  try {
+    const user = await requireUser();
+    const { FixSaleRateSchema } = await import("@/lib/validations/sale");
+    const { fixSaleRate } = await import("@/lib/services/sale-service");
+    const parsed = FixSaleRateSchema.parse(formData);
+
+    const fixed = await fixSaleRate(
+      user.id,
+      user.role,
+      parsed.id,
+      parsed.fixedRatePerGram,
+      parsed.fixingNotes
+    );
+
+    revalidatePath("/sales");
+    revalidatePath("/stock");
+    revalidatePath("/transactions");
+    revalidatePath("/dashboard");
+    revalidatePath("/payments");
+    return { success: true, data: serializeForClient(fixed) };
+  } catch (err: unknown) {
+    return { success: false, error: sanitizeErrorMessage(err, "Failed to fix sale rate") };
   }
 }
 
@@ -106,6 +137,7 @@ export async function cancelSaleAction(formData: unknown) {
     revalidatePath("/stock");
     revalidatePath("/transactions");
     revalidatePath("/dashboard");
+    revalidatePath("/payments");
     return { success: true, data: serializeForClient(cancelled) };
   } catch (err: unknown) {
     return { success: false, error: sanitizeErrorMessage(err, "Failed to cancel sale") };

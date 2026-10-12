@@ -54,6 +54,11 @@ export default async function PurchasesPage() {
     paymentMode: p.paymentMode,
     notes: p.notes,
     status: p.status,
+    rateType: p.rateType || "FIXED",
+    rateStatus: p.rateStatus || "FIXED",
+    fixedAt: p.fixedAt ? p.fixedAt.toISOString() : null,
+    provisionalRate: p.provisionalRate ? p.provisionalRate.toString() : null,
+    fixingNotes: p.fixingNotes || null,
     cancelReason: p.cancelReason,
     cancelledAt: p.cancelledAt?.toISOString() || null,
     createdAt: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
@@ -61,6 +66,7 @@ export default async function PurchasesPage() {
     purity: p.purity ? { id: p.purity.id, label: p.purity.label, fineness: p.purity.fineness.toString() } : { id: p.purityId, label: "", fineness: "0" },
     counterparty: p.counterparty ? { id: p.counterparty.id, name: p.counterparty.name, phone: p.counterparty.phone } : null,
     createdBy: p.createdBy ? { id: p.createdBy.id, name: p.createdBy.name, email: p.createdBy.email } : { id: p.createdById, name: "System", email: "" },
+    fixedBy: (p as any).fixedBy ? { id: (p as any).fixedBy.id, name: (p as any).fixedBy.name, email: (p as any).fixedBy.email } : null,
   }));
 
   return (

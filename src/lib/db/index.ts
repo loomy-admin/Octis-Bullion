@@ -14,6 +14,12 @@ import { Sale } from "./models/Sale";
 import { StockAdjustment } from "./models/StockAdjustment";
 import { AuditLog } from "./models/AuditLog";
 import { AppSetting } from "./models/AppSetting";
+import { Payment } from "./models/Payment";
+import { MetalRate } from "./models/MetalRate";
+import { RateBlock } from "./models/RateBlock";
+import { MetalDenomination } from "./models/MetalDenomination";
+import { CashClosing } from "./models/CashClosing";
+import { PartySettlement } from "./models/PartySettlement";
 
 export * from "./types";
 
@@ -102,6 +108,56 @@ export function initAssociations() {
   OpeningStock.hasOne(StockMovement, { foreignKey: "openingStockId", as: "stockMovement" });
   StockMovement.belongsTo(OpeningStock, { foreignKey: "openingStockId", as: "openingStock" });
 
+  // Payment relations
+  Counterparty.hasMany(Payment, { foreignKey: "counterpartyId", as: "payments" });
+  Payment.belongsTo(Counterparty, { foreignKey: "counterpartyId", as: "counterparty" });
+
+  Purchase.hasMany(Payment, { foreignKey: "linkedPurchaseId", as: "payments" });
+  Payment.belongsTo(Purchase, { foreignKey: "linkedPurchaseId", as: "purchase" });
+
+  Sale.hasMany(Payment, { foreignKey: "linkedSaleId", as: "payments" });
+  Payment.belongsTo(Sale, { foreignKey: "linkedSaleId", as: "sale" });
+
+  User.hasMany(Payment, { foreignKey: "createdById", as: "payments" });
+  Payment.belongsTo(User, { foreignKey: "createdById", as: "createdBy" });
+
+  Purchase.belongsTo(User, { foreignKey: "fixedById", as: "fixedBy" });
+  Sale.belongsTo(User, { foreignKey: "fixedById", as: "fixedBy" });
+
+  // MetalRate relations
+  Metal.hasMany(MetalRate, { foreignKey: "metalId", as: "rates" });
+  MetalRate.belongsTo(Metal, { foreignKey: "metalId", as: "metal" });
+  Purity.hasMany(MetalRate, { foreignKey: "purityId", as: "rates" });
+  MetalRate.belongsTo(Purity, { foreignKey: "purityId", as: "purity" });
+  MetalRate.belongsTo(User, { foreignKey: "updatedById", as: "updatedBy" });
+
+  // RateBlock relations
+  Counterparty.hasMany(RateBlock, { foreignKey: "counterpartyId", as: "rateBlocks" });
+  RateBlock.belongsTo(Counterparty, { foreignKey: "counterpartyId", as: "counterparty" });
+  RateBlock.belongsTo(Metal, { foreignKey: "metalId", as: "metal" });
+  RateBlock.belongsTo(Purity, { foreignKey: "purityId", as: "purity" });
+  RateBlock.belongsTo(Sale, { foreignKey: "fulfilledSaleId", as: "fulfilledSale" });
+  RateBlock.belongsTo(User, { foreignKey: "createdById", as: "createdBy" });
+
+  // MetalDenomination relations
+  Metal.hasMany(MetalDenomination, { foreignKey: "metalId", as: "denominations" });
+  MetalDenomination.belongsTo(Metal, { foreignKey: "metalId", as: "metal" });
+  Purity.hasMany(MetalDenomination, { foreignKey: "purityId", as: "denominations" });
+  MetalDenomination.belongsTo(Purity, { foreignKey: "purityId", as: "purity" });
+
+  // CashClosing relations
+  User.hasMany(CashClosing, { foreignKey: "closedById", as: "cashClosings" });
+  CashClosing.belongsTo(User, { foreignKey: "closedById", as: "closedBy" });
+
+  // PartySettlement relations
+  Counterparty.hasMany(PartySettlement, { foreignKey: "counterpartyId", as: "settlements" });
+  PartySettlement.belongsTo(Counterparty, { foreignKey: "counterpartyId", as: "counterparty" });
+  PartySettlement.belongsTo(Metal, { foreignKey: "metalId", as: "metal" });
+  PartySettlement.belongsTo(Purity, { foreignKey: "purityId", as: "purity" });
+  PartySettlement.belongsTo(Payment, { foreignKey: "linkedPaymentId", as: "payment" });
+  PartySettlement.belongsTo(StockMovement, { foreignKey: "linkedStockMovementId", as: "stockMovement" });
+  PartySettlement.belongsTo(User, { foreignKey: "createdById", as: "createdBy" });
+
   associationsInitialized = true;
 }
 
@@ -138,6 +194,12 @@ export {
   StockAdjustment,
   AuditLog,
   AppSetting,
+  Payment,
+  MetalRate,
+  RateBlock,
+  MetalDenomination,
+  CashClosing,
+  PartySettlement,
 };
 
 export default sequelize;

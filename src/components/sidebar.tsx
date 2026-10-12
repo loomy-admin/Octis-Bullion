@@ -22,6 +22,12 @@ import {
   Sparkles,
   ShieldCheck,
   UserCog,
+  Wallet,
+  TrendingUp,
+  BookmarkCheck,
+  Coins,
+  Lock,
+  Scale,
 } from "lucide-react";
 import { authClient } from "@/lib/auth/auth-client";
 import { useTheme } from "@/components/theme-provider";
@@ -233,7 +239,13 @@ export function Sidebar({ user }: SidebarProps) {
     { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
     { label: "Purchases", href: "/purchases", icon: ShoppingCart },
     { label: "Sales", href: "/sales", icon: TrendingDown },
+    { label: "Rates Desk", href: "/rates", icon: TrendingUp },
+    { label: "Rate Booking", href: "/rate-blocks", icon: BookmarkCheck },
+    { label: "Payments", href: "/payments", icon: Wallet },
+    { label: "Dual Settlement", href: "/settlements", icon: Scale },
+    { label: "Drawer Closing", href: "/cash-closing", icon: Lock },
     { label: "Stock", href: "/stock", icon: Package },
+    { label: "Coins & Bars", href: "/denominations", icon: Coins },
     { label: "Reports", href: "/reports", icon: BarChart3 },
     { label: "Adjustments", href: "/adjustments", icon: Sliders },
     { label: "Transactions", href: "/transactions", icon: History },

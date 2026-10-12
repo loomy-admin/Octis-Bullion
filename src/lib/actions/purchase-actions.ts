@@ -28,14 +28,16 @@ export async function createPurchaseDraftAction(formData: unknown) {
       metalId: parsed.metalId,
       purityId: parsed.purityId,
       weightGrams: parsed.weightGrams,
-      ratePerGram: parsed.ratePerGram,
+      ratePerGram: parsed.ratePerGram || "0",
       paymentMode: parsed.paymentMode,
       notes: parsed.notes,
+      rateType: parsed.rateType,
     });
 
     revalidatePath("/purchases");
     revalidatePath("/stock");
     revalidatePath("/dashboard");
+    revalidatePath("/payments");
     return { success: true, data: serializeForClient(purchase) };
   } catch (err: unknown) {
     return { success: false, error: sanitizeErrorMessage(err, "Failed to create purchase draft") };
@@ -51,6 +53,7 @@ export async function postPurchaseAction(purchaseId: string) {
     revalidatePath("/stock");
     revalidatePath("/transactions");
     revalidatePath("/dashboard");
+    revalidatePath("/payments");
     return { success: true, data: serializeForClient(purchase) };
   } catch (err: unknown) {
     return { success: false, error: sanitizeErrorMessage(err, "Failed to post purchase") };
@@ -72,9 +75,10 @@ export async function createAndPostPurchaseAction(formData: unknown) {
       metalId: parsed.metalId,
       purityId: parsed.purityId,
       weightGrams: parsed.weightGrams,
-      ratePerGram: parsed.ratePerGram,
+      ratePerGram: parsed.ratePerGram || "0",
       paymentMode: parsed.paymentMode,
       notes: parsed.notes,
+      rateType: parsed.rateType,
     });
 
     // 2. Post immediately
@@ -84,9 +88,36 @@ export async function createAndPostPurchaseAction(formData: unknown) {
     revalidatePath("/stock");
     revalidatePath("/transactions");
     revalidatePath("/dashboard");
+    revalidatePath("/payments");
     return { success: true, data: serializeForClient(posted) };
   } catch (err: unknown) {
     return { success: false, error: sanitizeErrorMessage(err, "Failed to record purchase") };
+  }
+}
+
+export async function fixPurchaseRateAction(formData: unknown) {
+  try {
+    const user = await requireUser();
+    const { FixRateSchema } = await import("@/lib/validations/purchase");
+    const { fixPurchaseRate } = await import("@/lib/services/purchase-service");
+    const parsed = FixRateSchema.parse(formData);
+
+    const fixed = await fixPurchaseRate(
+      user.id,
+      user.role,
+      parsed.id,
+      parsed.fixedRatePerGram,
+      parsed.fixingNotes
+    );
+
+    revalidatePath("/purchases");
+    revalidatePath("/stock");
+    revalidatePath("/transactions");
+    revalidatePath("/dashboard");
+    revalidatePath("/payments");
+    return { success: true, data: serializeForClient(fixed) };
+  } catch (err: unknown) {
+    return { success: false, error: sanitizeErrorMessage(err, "Failed to fix purchase rate") };
   }
 }
 
@@ -106,6 +137,7 @@ export async function cancelPurchaseAction(formData: unknown) {
     revalidatePath("/stock");
     revalidatePath("/transactions");
     revalidatePath("/dashboard");
+    revalidatePath("/payments");
     return { success: true, data: serializeForClient(cancelled) };
   } catch (err: unknown) {
     return { success: false, error: sanitizeErrorMessage(err, "Failed to cancel purchase") };

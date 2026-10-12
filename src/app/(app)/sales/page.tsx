@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { PageHeader } from "@/components/page-header";
 import { listSales } from "@/lib/services/sale-service";
 import { getAllMetals } from "@/lib/services/master-service";
@@ -54,6 +55,11 @@ export default async function SalesPage() {
     paymentMode: s.paymentMode,
     notes: s.notes,
     status: s.status,
+    rateType: s.rateType || "FIXED",
+    rateStatus: s.rateStatus || "FIXED",
+    fixedAt: s.fixedAt ? s.fixedAt.toISOString() : null,
+    provisionalRate: s.provisionalRate ? s.provisionalRate.toString() : null,
+    fixingNotes: s.fixingNotes || null,
     cancelReason: s.cancelReason,
     cancelledAt: s.cancelledAt?.toISOString() || null,
     createdAt: s.createdAt ? new Date(s.createdAt).toISOString() : new Date().toISOString(),
@@ -61,6 +67,7 @@ export default async function SalesPage() {
     purity: s.purity ? { id: s.purity.id, label: s.purity.label, fineness: s.purity.fineness.toString() } : { id: s.purityId, label: "", fineness: "0" },
     counterparty: s.counterparty ? { id: s.counterparty.id, name: s.counterparty.name, phone: s.counterparty.phone } : null,
     createdBy: s.createdBy ? { id: s.createdBy.id, name: s.createdBy.name, email: s.createdBy.email } : { id: s.createdById, name: "System", email: "" },
+    fixedBy: (s as any).fixedBy ? { id: (s as any).fixedBy.id, name: (s as any).fixedBy.name, email: (s as any).fixedBy.email } : null,
   }));
 
   return (
@@ -69,12 +76,14 @@ export default async function SalesPage() {
         title="Sale Register"
         subtitle="Manage customer sales invoices, verify physical stock sufficiency, and record bullion dispatches"
       />
-      <SalesClient
-        initialSales={serializedSales}
-        metals={serializedMetals}
-        buyers={buyers}
-        userRole={user.role}
-      />
+      <Suspense fallback={<div className="p-8 text-center text-xs text-muted-foreground">Loading sales desk...</div>}>
+        <SalesClient
+          initialSales={serializedSales}
+          metals={serializedMetals}
+          buyers={buyers}
+          userRole={user.role}
+        />
+      </Suspense>
     </div>
   );
 }

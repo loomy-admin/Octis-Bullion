@@ -51,6 +51,8 @@ export interface CreateSaleInput {
   ratePerGram: string;
   paymentMode: PaymentMode;
   notes?: string;
+  rateType?: "FIXED" | "UNFIXED";
+  provisionalRate?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,11 +64,12 @@ export async function createSale(
   _actorRole: Role,
   input: CreateSaleInput
 ) {
+  const isUnfixed = input.rateType === "UNFIXED";
   const weight = new Decimal(input.weightGrams);
-  const rate = new Decimal(input.ratePerGram);
+  const rate = input.ratePerGram ? new Decimal(input.ratePerGram) : new Decimal(0);
 
   if (weight.lessThanOrEqualTo(0)) throw new Error("Weight must be positive.");
-  if (rate.lessThanOrEqualTo(0)) throw new Error("Rate must be positive.");
+  if (!isUnfixed && rate.lessThanOrEqualTo(0)) throw new Error("Rate must be positive.");
 
   const total = weight.times(rate).toDecimalPlaces(2);
 
@@ -89,6 +92,9 @@ export async function createSale(
         paymentMode: input.paymentMode,
         notes: input.notes || null,
         status: "DRAFT",
+        rateType: isUnfixed ? "UNFIXED" : "FIXED",
+        rateStatus: isUnfixed ? "UNFIXED" : "FIXED",
+        provisionalRate: isUnfixed && input.ratePerGram ? input.ratePerGram : null,
         createdById: actorId,
       },
       { transaction: t }
@@ -291,9 +297,68 @@ export async function listSales(opts?: {
       { model: Purity, as: "purity" },
       { model: Counterparty, as: "counterparty" },
       { model: User, as: "createdBy", attributes: ["id", "name", "email"] },
+      { model: User, as: "fixedBy", attributes: ["id", "name", "email"] },
     ],
     order: [["date", "DESC"]],
   });
 
   return sales.map((s) => s.get({ plain: true }));
 }
+
+// ---------------------------------------------------------------------------
+// Fix Rate (UNFIXED → FIXED)
+// ---------------------------------------------------------------------------
+
+export async function fixSaleRate(
+  actorId: string,
+  _actorRole: Role,
+  saleId: string,
+  fixedRatePerGram: string,
+  fixingNotes?: string
+) {
+  const rate = new Decimal(fixedRatePerGram);
+  if (rate.lessThanOrEqualTo(0)) throw new Error("Fixed rate must be positive.");
+
+  return runTransaction(async (t) => {
+    const sale = await Sale.findByPk(saleId, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (!sale) throw new Error(`Sale ${saleId} not found.`);
+    if (sale.status === "CANCELLED") {
+      throw new Error("Cannot fix rate on a cancelled sale.");
+    }
+    if (sale.rateStatus === "FIXED") {
+      throw new Error(`Rate is already fixed for sale ${sale.invoiceNumber}.`);
+    }
+
+    const weight = new Decimal(sale.weightGrams);
+    const newTotal = weight.times(rate).toDecimalPlaces(2);
+    const oldRate = sale.ratePerGram;
+
+    sale.ratePerGram = rate.toString();
+    sale.totalAmount = newTotal.toString();
+    sale.rateStatus = "FIXED";
+    sale.fixedAt = new Date();
+    sale.fixedById = actorId;
+    sale.fixingNotes = fixingNotes?.trim() || null;
+    await sale.save({ transaction: t });
+
+    await writeAudit(t, {
+      action: "UPDATE",
+      entityType: "Sale",
+      entityId: sale.id,
+      actorId,
+      saleId: sale.id,
+      metalId: sale.metalId,
+      purityId: sale.purityId,
+      prevState: { rateStatus: "UNFIXED", ratePerGram: oldRate },
+      nextState: { rateStatus: "FIXED", ratePerGram: rate.toString(), totalAmount: newTotal.toString() },
+      description: `Rate fixed for sale ${sale.invoiceNumber} @ ₹${rate.toFixed(2)}/g. Final Amount: ₹${newTotal.toFixed(2)}`,
+    });
+
+    return sale.get({ plain: true });
+  });
+}
+

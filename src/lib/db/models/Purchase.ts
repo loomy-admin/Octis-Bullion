@@ -18,6 +18,12 @@ export interface PurchaseAttributes {
   status: "DRAFT" | "POSTED" | "CANCELLED";
   cancelReason?: string | null;
   cancelledAt?: Date | null;
+  rateType?: "FIXED" | "UNFIXED";
+  rateStatus?: "FIXED" | "UNFIXED";
+  fixedAt?: Date | null;
+  fixedById?: string | null;
+  provisionalRate?: number | string | null;
+  fixingNotes?: string | null;
   createdById: string;
   createdAt?: Date;
   updatedAt?: Date;
@@ -25,6 +31,7 @@ export interface PurchaseAttributes {
   purity?: import("./Purity").PurityAttributes;
   counterparty?: import("./Counterparty").CounterpartyAttributes | null;
   createdBy?: import("./User").UserAttributes;
+  fixedBy?: import("./User").UserAttributes | null;
 }
 
 export type PurchaseCreationAttributes = Optional<
@@ -37,6 +44,12 @@ export type PurchaseCreationAttributes = Optional<
   | "status"
   | "cancelReason"
   | "cancelledAt"
+  | "rateType"
+  | "rateStatus"
+  | "fixedAt"
+  | "fixedById"
+  | "provisionalRate"
+  | "fixingNotes"
   | "createdAt"
   | "updatedAt"
 >;
@@ -58,6 +71,12 @@ export class Purchase extends Model<PurchaseAttributes, PurchaseCreationAttribut
   declare status: "DRAFT" | "POSTED" | "CANCELLED";
   declare cancelReason: string | null;
   declare cancelledAt: Date | null;
+  declare rateType: "FIXED" | "UNFIXED";
+  declare rateStatus: "FIXED" | "UNFIXED";
+  declare fixedAt: Date | null;
+  declare fixedById: string | null;
+  declare provisionalRate: number | string | null;
+  declare fixingNotes: string | null;
   declare createdById: string;
   declare readonly createdAt: Date;
   declare readonly updatedAt: Date;
@@ -131,6 +150,30 @@ Purchase.init(
       type: DataTypes.DATE,
       allowNull: true,
     },
+    rateType: {
+      type: DataTypes.ENUM("FIXED", "UNFIXED"),
+      defaultValue: "FIXED",
+    },
+    rateStatus: {
+      type: DataTypes.ENUM("FIXED", "UNFIXED"),
+      defaultValue: "FIXED",
+    },
+    fixedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    fixedById: {
+      type: DataTypes.STRING(191),
+      allowNull: true,
+    },
+    provisionalRate: {
+      type: DataTypes.DECIMAL(12, 4),
+      allowNull: true,
+    },
+    fixingNotes: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
     createdById: {
       type: DataTypes.STRING(191),
       allowNull: false,
@@ -144,6 +187,7 @@ Purchase.init(
       { fields: ["date"] },
       { fields: ["metalId", "purityId"] },
       { fields: ["status"] },
+      { fields: ["rateStatus"] },
       { fields: ["counterpartyId"] },
     ],
   }

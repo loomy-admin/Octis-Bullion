@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useTransition } from "react";
+import Link from "next/link";
 import {
   Users,
   Plus,
@@ -13,6 +14,8 @@ import {
   Mail,
   MapPin,
   Building,
+  Wallet,
+  Scale,
 } from "lucide-react";
 import {
   createCounterpartyAction,
@@ -224,38 +227,54 @@ export function CounterpartiesClient({
                         {cp.isActive ? "Active" : "Inactive"}
                       </span>
                     </td>
-                    {isAdmin && (
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => setEditingItem(cp)}
+                          <Link
+                            href={`/payments?counterpartyId=${cp.id}`}
                             className="p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[#C59A58] hover:bg-black/5 dark:hover:bg-white/5 transition"
-                            title="Edit"
+                            title="Payments & Ledger"
                           >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            disabled={isPending}
-                            onClick={() => {
-                              startTransition(async () => {
-                                const res = await toggleCounterpartyActiveAction(
-                                  cp.id,
-                                  !cp.isActive
-                                );
-                                if (!res.success) setErrorMsg(res.error || "Action failed");
-                              });
-                            }}
-                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition ${
-                              cp.isActive
-                                ? "border-red-500/30 text-red-500 hover:bg-red-500/10"
-                                : "border-green-500/30 text-green-500 hover:bg-green-500/10"
-                            }`}
+                            <Wallet className="w-3.5 h-3.5" />
+                          </Link>
+                          <Link
+                            href={`/settlements?counterpartyId=${cp.id}`}
+                            className="p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-amber-500 hover:bg-black/5 dark:hover:bg-white/5 transition"
+                            title="Metal + Cash Dual Settlement"
                           >
-                            {cp.isActive ? "Deactivate" : "Activate"}
-                          </button>
+                            <Scale className="w-3.5 h-3.5" />
+                          </Link>
+                          {isAdmin && (
+                            <>
+                              <button
+                                onClick={() => setEditingItem(cp)}
+                                className="p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[#C59A58] hover:bg-black/5 dark:hover:bg-white/5 transition"
+                                title="Edit"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                disabled={isPending}
+                                onClick={() => {
+                                  startTransition(async () => {
+                                    const res = await toggleCounterpartyActiveAction(
+                                      cp.id,
+                                      !cp.isActive
+                                    );
+                                    if (!res.success) setErrorMsg(res.error || "Action failed");
+                                  });
+                                }}
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition ${
+                                  cp.isActive
+                                    ? "border-red-500/30 text-red-500 hover:bg-red-500/10"
+                                    : "border-green-500/30 text-green-500 hover:bg-green-500/10"
+                                }`}
+                              >
+                                {cp.isActive ? "Deactivate" : "Activate"}
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
-                    )}
                   </tr>
                 ))
               )}

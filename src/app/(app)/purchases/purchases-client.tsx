@@ -16,12 +16,14 @@ import {
   Calendar,
   DollarSign,
   Scale,
+  Pin,
 } from "lucide-react";
 import {
   createPurchaseDraftAction,
   postPurchaseAction,
   createAndPostPurchaseAction,
   cancelPurchaseAction,
+  fixPurchaseRateAction,
 } from "@/lib/actions/purchase-actions";
 import { formatCurrency, formatGrams, formatDate } from "@/lib/utils/helpers";
 import type { PaymentMode, TransactionStatus } from "@/lib/db/types";
@@ -41,6 +43,11 @@ interface PurchaseRow {
   paymentMode: PaymentMode;
   notes?: string | null;
   status: TransactionStatus;
+  rateType?: "FIXED" | "UNFIXED";
+  rateStatus?: "FIXED" | "UNFIXED";
+  fixedAt?: string | Date | null;
+  provisionalRate?: string | null;
+  fixingNotes?: string | null;
   cancelReason?: string | null;
   cancelledAt?: string | Date | null;
   createdAt: string | Date;
@@ -48,6 +55,7 @@ interface PurchaseRow {
   purity: { id: string; label: string; fineness: string };
   counterparty?: { id: string; name: string; phone?: string | null } | null;
   createdBy: { id: string; name: string; email: string };
+  fixedBy?: { id: string; name: string; email: string } | null;
 }
 
 interface PurchasesClientProps {
@@ -78,6 +86,7 @@ export function PurchasesClient({
   const [showNewModal, setShowNewModal] = useState(false);
   const [selectedPurchase, setSelectedPurchase] = useState<PurchaseRow | null>(null);
   const [cancellingPurchase, setCancellingPurchase] = useState<PurchaseRow | null>(null);
+  const [fixingPurchase, setFixingPurchase] = useState<PurchaseRow | null>(null);
   const [cancelReason, setCancelReason] = useState("");
 
   const isAdmin = userRole === "ADMIN";
@@ -207,10 +216,25 @@ export function PurchasesClient({
                       {formatGrams(p.weightGrams)}
                     </td>
                     <td className="py-3 px-4 text-right font-mono text-[var(--text-secondary)]">
-                      {formatCurrency(p.ratePerGram)}
+                      {p.rateStatus === "UNFIXED" ? (
+                        <div className="flex flex-col items-end">
+                          <span className="text-amber-500 font-semibold">
+                            {parseFloat(p.ratePerGram) > 0 ? formatCurrency(p.ratePerGram) : "—"}
+                          </span>
+                          <span className="text-[9px] px-1.5 py-0.2 rounded font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                            UNFIXED
+                          </span>
+                        </div>
+                      ) : (
+                        formatCurrency(p.ratePerGram)
+                      )}
                     </td>
                     <td className="py-3 px-4 text-right font-mono font-bold text-[#C59A58]">
-                      {formatCurrency(p.totalAmount)}
+                      {p.rateStatus === "UNFIXED" && parseFloat(p.ratePerGram) === 0 ? (
+                        <span className="text-amber-500 text-xs font-normal">Pending Fix</span>
+                      ) : (
+                        formatCurrency(p.totalAmount)
+                      )}
                     </td>
                     <td className="py-3 px-4">
                       <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-black/5 dark:bg-white/5 text-[var(--text-secondary)]">
@@ -246,6 +270,16 @@ export function PurchasesClient({
                         >
                           <Eye className="w-3.5 h-3.5" />
                         </button>
+                        {p.rateStatus === "UNFIXED" && p.status !== "CANCELLED" && (
+                          <button
+                            onClick={() => setFixingPurchase(p)}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 transition"
+                            title="Fix price per gram at prevailing market rate"
+                          >
+                            <Pin className="w-3 h-3" />
+                            <span>Fix Rate</span>
+                          </button>
+                        )}
                         {p.status === "DRAFT" && (
                           <button
                             disabled={isPending}
@@ -297,6 +331,10 @@ export function PurchasesClient({
         <PurchaseDetailModal
           purchase={selectedPurchase}
           onClose={() => setSelectedPurchase(null)}
+          onFixRate={() => {
+            setFixingPurchase(selectedPurchase);
+            setSelectedPurchase(null);
+          }}
         />
       )}
 
@@ -362,6 +400,18 @@ export function PurchasesClient({
           </div>
         </div>
       )}
+
+      {/* Fix Rate Modal */}
+      {fixingPurchase && (
+        <FixRateModal
+          item={fixingPurchase}
+          onClose={() => setFixingPurchase(null)}
+          onSuccess={() => {
+            setFixingPurchase(null);
+          }}
+          onError={(msg) => setErrorMsg(msg)}
+        />
+      )}
     </div>
   );
 }
@@ -398,6 +448,7 @@ function NewPurchaseModal({
   const [purityId, setPurityId] = useState(activePurities[0]?.id || "");
 
   // Weight & rate
+  const [rateType, setRateType] = useState<"FIXED" | "UNFIXED">("FIXED");
   const [weightGrams, setWeightGrams] = useState("");
   const [ratePerGram, setRatePerGram] = useState("");
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("CASH");
@@ -446,8 +497,8 @@ function NewPurchaseModal({
       onError("Weight must be greater than 0");
       return;
     }
-    if (rateNum <= 0) {
-      onError("Rate per gram must be greater than 0");
+    if (rateType === "FIXED" && rateNum <= 0) {
+      onError("Rate per gram must be greater than 0 for fixed purchases");
       return;
     }
 
@@ -461,7 +512,8 @@ function NewPurchaseModal({
       metalId,
       purityId,
       weightGrams,
-      ratePerGram,
+      rateType,
+      ratePerGram: rateNum > 0 ? ratePerGram : "0",
       paymentMode,
       notes: notes.trim() || undefined,
     };
@@ -592,6 +644,43 @@ function NewPurchaseModal({
             </div>
           </div>
 
+          {/* Rate Type Selector */}
+          <div className="space-y-1.5">
+            <label className="block font-semibold text-[var(--text-secondary)]">Rate Agreement Type</label>
+            <div className="flex items-center gap-2 bg-black/5 dark:bg-white/5 p-1 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setRateType("FIXED")}
+                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition ${
+                  rateType === "FIXED"
+                    ? "bg-[var(--bg-card)] shadow-xs text-[#C59A58]"
+                    : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                }`}
+              >
+                Fixed Rate Deal
+              </button>
+              <button
+                type="button"
+                onClick={() => setRateType("UNFIXED")}
+                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition ${
+                  rateType === "UNFIXED"
+                    ? "bg-[var(--bg-card)] shadow-xs text-amber-500"
+                    : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                }`}
+              >
+                Unfixed Rate Deal (Fix Later)
+              </button>
+            </div>
+            {rateType === "UNFIXED" && (
+              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-600 dark:text-amber-400">
+                <span className="font-bold block mb-0.5">Unfixed Rate Agreement</span>
+                <p className="text-[11px] leading-relaxed">
+                  Inward metal weight is immediately credited to your physical stock ledger (+grams). The price per gram is left open to be fixed later at prevailing market rates.
+                </p>
+              </div>
+            )}
+          </div>
+
           {/* Weight & Rate */}
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -606,11 +695,13 @@ function NewPurchaseModal({
               />
             </div>
             <div>
-              <label className="block mb-1 font-semibold text-[var(--text-secondary)]">Purchase Rate / g (₹) *</label>
+              <label className="block mb-1 font-semibold text-[var(--text-secondary)]">
+                {rateType === "FIXED" ? "Purchase Rate / g (₹) *" : "Provisional Rate / g (₹, Optional)"}
+              </label>
               <input
                 type="text"
-                required
-                placeholder="e.g. 7200.00"
+                required={rateType === "FIXED"}
+                placeholder={rateType === "FIXED" ? "e.g. 7200.00" : "Optional estimate"}
                 value={ratePerGram}
                 onChange={(e) => setRatePerGram(e.target.value)}
                 className="w-full px-3 py-2 rounded-xl bg-[var(--bg-input)] border border-[var(--border-primary)] text-[var(--text-primary)] font-mono"
@@ -620,9 +711,11 @@ function NewPurchaseModal({
 
           {/* Total Preview Pill */}
           <div className="p-3 rounded-xl bg-[#C59A58]/10 border border-[#C59A58]/30 flex items-center justify-between">
-            <span className="font-semibold text-[var(--text-secondary)]">Calculated Purchase Total:</span>
+            <span className="font-semibold text-[var(--text-secondary)]">
+              {rateType === "FIXED" ? "Calculated Purchase Total:" : "Provisional Total Amount:"}
+            </span>
             <span className="font-mono font-bold text-sm text-[#C59A58]">
-              {formatCurrency(previewTotal)}
+              {rateType === "UNFIXED" && rateNum === 0 ? "Awaiting Price Fix" : formatCurrency(previewTotal)}
             </span>
           </div>
 
@@ -695,9 +788,11 @@ function NewPurchaseModal({
 function PurchaseDetailModal({
   purchase,
   onClose,
+  onFixRate,
 }: {
   purchase: PurchaseRow;
   onClose: () => void;
+  onFixRate?: () => void;
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
@@ -789,6 +884,26 @@ function PurchaseDetailModal({
           </div>
         )}
 
+        {purchase.rateStatus === "UNFIXED" && purchase.status !== "CANCELLED" && (
+          <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs flex items-center justify-between">
+            <div>
+              <span className="font-bold text-amber-600 dark:text-amber-400 block">Unfixed Rate Purchase</span>
+              <span className="text-[11px] text-[var(--text-secondary)]">
+                The settlement rate for this purchase has not yet been finalized.
+              </span>
+            </div>
+            {onFixRate && (
+              <button
+                onClick={onFixRate}
+                className="px-3 py-1.5 rounded-lg bg-amber-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm hover:bg-amber-600 transition"
+              >
+                <Pin className="w-3.5 h-3.5" />
+                <span>Fix Rate</span>
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="flex justify-end pt-2">
           <button
             onClick={onClose}
@@ -797,6 +912,146 @@ function PurchaseDetailModal({
             Close
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Fix Rate Modal
+// ---------------------------------------------------------------------------
+
+function FixRateModal({
+  item,
+  onClose,
+  onSuccess,
+  onError,
+}: {
+  item: PurchaseRow;
+  onClose: () => void;
+  onSuccess: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [fixedRate, setFixedRate] = useState(
+    item.provisionalRate || (parseFloat(item.ratePerGram) > 0 ? item.ratePerGram : "")
+  );
+  const [notes, setNotes] = useState(item.fixingNotes || "");
+  const [loading, setLoading] = useState(false);
+
+  const weightNum = parseFloat(item.weightGrams) || 0;
+  const rateNum = parseFloat(fixedRate) || 0;
+  const newTotal = weightNum > 0 && rateNum > 0 ? (weightNum * rateNum).toFixed(2) : "0.00";
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (rateNum <= 0) {
+      onError("Fixed rate must be greater than 0");
+      return;
+    }
+
+    setLoading(true);
+    const res = await fixPurchaseRateAction({
+      id: item.id,
+      fixedRatePerGram: fixedRate.trim(),
+      fixingNotes: notes.trim() || undefined,
+    });
+    setLoading(false);
+
+    if (res.success) {
+      onSuccess();
+    } else {
+      onError(res.error || "Failed to fix purchase rate");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+      <div className="w-full max-w-md bg-[var(--bg-card)] border border-[var(--border-primary)] rounded-2xl p-6 shadow-2xl space-y-4">
+        <div className="flex items-center justify-between border-b border-[var(--border-primary)] pb-3">
+          <h3 className="text-base font-bold text-[var(--text-primary)] flex items-center gap-2">
+            <Pin className="w-4 h-4 text-amber-500" />
+            <span>Fix Market Rate</span>
+          </h3>
+          <span className="text-xs px-2 py-0.5 rounded bg-amber-500/10 text-amber-500 font-bold font-mono">
+            {item.invoiceNumber}
+          </span>
+        </div>
+
+        <div className="p-3 rounded-xl bg-black/5 dark:bg-white/5 border border-[var(--border-primary)] space-y-1.5 text-xs">
+          <div className="flex justify-between text-[var(--text-secondary)]">
+            <span>Supplier:</span>
+            <span className="font-bold text-[var(--text-primary)]">{item.supplierName}</span>
+          </div>
+          <div className="flex justify-between text-[var(--text-secondary)]">
+            <span>Metal & Purity:</span>
+            <span className="font-semibold text-[var(--text-primary)]">
+              {item.metal.name} • {item.purity.label}
+            </span>
+          </div>
+          <div className="flex justify-between text-[var(--text-secondary)]">
+            <span>Inward Weight:</span>
+            <span className="font-mono font-bold text-[var(--text-primary)]">
+              {formatGrams(item.weightGrams)}
+            </span>
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-[var(--text-secondary)] mb-1">
+              Agreed Rate / Gram (₹) *
+            </label>
+            <input
+              type="text"
+              required
+              autoFocus
+              placeholder="e.g. 7250.00"
+              value={fixedRate}
+              onChange={(e) => setFixedRate(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl bg-[var(--bg-input)] border border-[var(--border-primary)] text-sm text-[var(--text-primary)] font-mono font-bold focus:border-amber-500 focus:outline-hidden"
+            />
+          </div>
+
+          <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between">
+            <span className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+              Final Settled Total:
+            </span>
+            <span className="font-mono font-bold text-base text-amber-600 dark:text-amber-400">
+              {formatCurrency(newTotal)}
+            </span>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-[var(--text-secondary)] mb-1">
+              Fixing Reference / Notes (Optional)
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. Fixed per MCX Evening spot call with dealer"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl bg-[var(--bg-input)] border border-[var(--border-primary)] text-xs text-[var(--text-primary)] focus:border-[#C59A58] focus:outline-hidden"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-[var(--border-primary)]">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-xs rounded-xl border border-[var(--border-primary)] font-semibold text-[var(--text-secondary)] hover:bg-black/5"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading || rateNum <= 0}
+              className="px-4 py-2 text-xs rounded-xl bg-amber-500 text-white font-bold hover:bg-amber-600 disabled:opacity-50 flex items-center gap-2 shadow-sm"
+            >
+              {loading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              Confirm Rate Fix
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
